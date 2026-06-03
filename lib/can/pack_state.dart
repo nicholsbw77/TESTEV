@@ -35,6 +35,7 @@ class PackState {
 
   // Connection
   bool connected = false;
+  bool vehicleBus = false;
   int fps = 0;
   String adapterType = '';
 
@@ -53,11 +54,13 @@ class PackState {
     return vc.reduce((a, b) => a + b);
   }
 
-  /// Best available pack voltage — prefer cell sum (accurate), fall back to CAN
+  /// Best available pack voltage — prefer cell sum when complete, fall back to CAN
   double get bestPackVoltage {
     final fromCells = packVoltageFromCells;
-    if (fromCells > 50) return fromCells;
-    return packVoltage;
+    final validCount = validCells.length;
+    if (fromCells > 50 && validCount >= 90) return fromCells;
+    if (packVoltage > 50) return packVoltage;
+    return fromCells;
   }
 
   /// Total kWh throughput (charged + discharged)
@@ -236,20 +239,23 @@ class PackState {
 
   void feed302(List<int> data) {
     if (data.length < 8) return;
-    final rawSoc = (data[0] << 8) | data[1];
-    final rawSoe = (data[2] << 8) | data[3];
-    // SoC: 0.01% per LSB (matches feed332 for vehicle CAN)
-    if (rawSoc > 0) {
-      final candidate = rawSoc * 0.01;
-      if (candidate <= 100.0) soc = candidate;
+
+    // SoC/SoE only reliable on BMS internal bus — on vehicle bus 0x302 may
+    // originate from a different ECU or be multiplexed with a mux byte at [0]
+    if (!vehicleBus) {
+      final rawSoc = (data[0] << 8) | data[1];
+      final rawSoe = (data[2] << 8) | data[3];
+      if (rawSoc > 0) {
+        final candidate = rawSoc * 0.01;
+        if (candidate <= 100.0) soc = candidate;
+      }
+      if (rawSoe > 0) {
+        final candidate = rawSoe * 0.01;
+        if (candidate <= 100.0) socSoe = candidate;
+      }
     }
-    if (rawSoe > 0) {
-      final candidate = rawSoe * 0.01;
-      if (candidate <= 100.0) socSoe = candidate;
-    }
+
     // kWh counter: bytes 4-6, 3 bytes big-endian, 10 Wh/LSB
-    // Guard: only accept if value is close to previous (within 500 kWh jump)
-    // to reject garbage from multiplexed frames with different data in bytes 4-6
     final kwhRaw = (data[4] << 16) | (data[5] << 8) | data[6];
     if (kwhRaw > 0) {
       final candidate = kwhRaw * 0.01;
@@ -257,7 +263,6 @@ class PackState {
         if (kwhCharged.isNaN) {
           kwhCharged = candidate;
         } else if (candidate >= kwhCharged && (candidate - kwhCharged) < 500) {
-          // Accept only small monotonic increases — rejects mux garbage
           kwhCharged = candidate;
         }
       }
@@ -266,10 +271,11 @@ class PackState {
 
   /// 0x332 — BMS energy status (vehicle CAN bus, Model S)
   /// Present on OBD-II port; NOT on BMS-internal CAN (where MeatPi connects)
+  /// Multiplexed by byte 0 — SoC is in mux 0x00 at bytes 1-2.
   void feed332(List<int> data) {
     if (data.length < 4) return;
-    // Bytes 0-1 big-endian: SoC with 0.01% per LSB
-    final rawSoc = (data[0] << 8) | data[1];
+    if (data[0] != 0x00) return;
+    final rawSoc = (data[1] << 8) | data[2];
     if (rawSoc > 0) {
       final candidate = rawSoc * 0.01;
       if (candidate <= 100.0 && candidate > 0.0) {
@@ -281,18 +287,21 @@ class PackState {
   /// 0x392 — BMS power limits (vehicle CAN bus, Model S, multiplexed by byte 0)
   void feed392(List<int> data) {
     if (data.length < 7) return;
-    final mux = data[0];
+    final mux = data[0] & 0x0F;
     switch (mux) {
-      case 0x04:
-        // Mux 04: max discharge/charge current limits
-        final rawDischg = (data[4] << 8) | data[5];
-        if (rawDischg > 0) maxDischargeCurrent = rawDischg * 0.1;
-        break;
       case 0x01:
-        // Mux 01: power limits
-        final rawMaxI = (data[4] << 8) | data[5];
-        if (rawMaxI > 0 && rawMaxI < 0xFFFF) {
-          wotCurrentLimit = rawMaxI * 0.1;
+        // Mux 01: power limits (kW), 16-bit LE, 0.01 kW/bit
+        final rawRegen = data[2] | (data[3] << 8);
+        if (rawRegen > 0) maxRegenKw = rawRegen * 0.01;
+        final rawDischgKw = data[4] | (data[5] << 8);
+        if (rawDischgKw > 0) maxDischargeKw = rawDischgKw * 0.01;
+        break;
+      case 0x04:
+        // Mux 04: current limits (A), 16-bit LE, 0.1 A/bit
+        final rawDischgI = data[3] | (data[4] << 8);
+        if (rawDischgI > 0 && rawDischgI < 0xFFFF) {
+          maxDischargeCurrent = rawDischgI * 0.1;
+          wotCurrentLimit = rawDischgI * 0.1;
         }
         break;
     }
@@ -301,6 +310,8 @@ class PackState {
   void feed542(List<int> data) {
     try {
       final trimmed = data.where((b) => b != 0).toList();
+      if (trimmed.isEmpty) return;
+      if (!trimmed.every((b) => b >= 0x20 && b <= 0x7E)) return;
       serialNumber = String.fromCharCodes(trimmed);
     } catch (_) {}
   }
@@ -308,6 +319,8 @@ class PackState {
   void feed552(List<int> data) {
     try {
       final trimmed = data.where((b) => b != 0).toList();
+      if (trimmed.isEmpty) return;
+      if (!trimmed.every((b) => b >= 0x20 && b <= 0x7E)) return;
       serialNumber += String.fromCharCodes(trimmed);
     } catch (_) {}
   }

@@ -37,6 +37,7 @@ class AppModel extends ChangeNotifier {
     final adapter = SlcanAdapter(host: host, port: port);
     _adapter = adapter;
     state.adapterType = 'MeatPi WiCAN';
+    state.vehicleBus = false;
 
     try {
       statusMessage = 'Connecting to $host:$port...';
@@ -76,6 +77,7 @@ class AppModel extends ChangeNotifier {
     );
     _adapter = adapter;
     state.adapterType = 'OBDLink MX+';
+    state.vehicleBus = true;
 
     try {
       await adapter.connect();
@@ -106,6 +108,7 @@ class AppModel extends ChangeNotifier {
       _adapter = null;
     }
     state.connected = false;
+    state.vehicleBus = false;
     statusMessage = 'Disconnected';
     WakelockPlus.disable();
     notifyListeners();
