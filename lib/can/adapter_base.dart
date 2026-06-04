@@ -58,10 +58,10 @@ void dispatchFrame(PackState state, CanFrame frame) {
       if (!state.vehicleBus) state.feed202(frame.data);
       break;
     case 0x232:
-      state.feed232(frame.data);
+      if (!state.vehicleBus) state.feed232(frame.data);
       break;
     case 0x302:
-      state.feed302(frame.data);
+      if (!state.vehicleBus) state.feed302(frame.data);
       break;
     case 0x332:
       state.feed332(frame.data);

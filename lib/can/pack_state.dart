@@ -54,12 +54,14 @@ class PackState {
     return vc.reduce((a, b) => a + b);
   }
 
-  /// Best available pack voltage — prefer cell sum when complete, fall back to CAN
+  /// Best available pack voltage — prefer cell sum when complete, fall back to CAN,
+  /// then estimate from average cell voltage × 96 when partial cells available
   double get bestPackVoltage {
     final fromCells = packVoltageFromCells;
     final validCount = validCells.length;
     if (fromCells > 50 && validCount >= 90) return fromCells;
     if (packVoltage > 50) return packVoltage;
+    if (validCount >= 20) return cellAvg * 96;
     return fromCells;
   }
 
@@ -270,16 +272,26 @@ class PackState {
   }
 
   /// 0x332 — BMS energy status (vehicle CAN bus, Model S)
-  /// Present on OBD-II port; NOT on BMS-internal CAN (where MeatPi connects)
-  /// Multiplexed by byte 0 — SoC is in mux 0x00 at bytes 1-2.
+  /// Cross-validates against cell voltage estimate to reject garbage from
+  /// multiplexed frames where byte layout is ambiguous.
   void feed332(List<int> data) {
-    if (data.length < 4) return;
-    if (data[0] != 0x00) return;
-    final rawSoc = (data[1] << 8) | data[2];
-    if (rawSoc > 0) {
-      final candidate = rawSoc * 0.01;
-      if (candidate <= 100.0 && candidate > 0.0) {
-        soc = candidate;
+    if (data.length < 3) return;
+    final avg = cellAvg;
+    if (avg.isNaN) return;
+    final estSoc = ((avg - 3.0) / 1.2 * 100).clamp(0.0, 100.0);
+
+    // Try bytes [0:1] (non-muxed) then [1:2] (muxed, byte 0 = mux counter)
+    for (final raw in [
+      (data[0] << 8) | data[1],
+      (data[1] << 8) | data[2],
+    ]) {
+      if (raw > 0) {
+        final candidate = raw * 0.01;
+        if (candidate > 0.0 && candidate <= 100.0 &&
+            (candidate - estSoc).abs() < 30) {
+          soc = candidate;
+          return;
+        }
       }
     }
   }
@@ -301,7 +313,6 @@ class PackState {
         final rawDischgI = data[3] | (data[4] << 8);
         if (rawDischgI > 0 && rawDischgI < 0xFFFF) {
           maxDischargeCurrent = rawDischgI * 0.1;
-          wotCurrentLimit = rawDischgI * 0.1;
         }
         break;
     }
