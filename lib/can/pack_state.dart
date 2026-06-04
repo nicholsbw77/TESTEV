@@ -297,22 +297,28 @@ class PackState {
   }
 
   /// 0x392 — BMS power limits (vehicle CAN bus, Model S, multiplexed by byte 0)
+  /// Verified against raw CAN capture: mux cycles 0x01-0x07.
   void feed392(List<int> data) {
     if (data.length < 7) return;
     final mux = data[0] & 0x0F;
     switch (mux) {
       case 0x01:
-        // Mux 01: power limits (kW), 16-bit LE, 0.01 kW/bit
-        final rawRegen = data[2] | (data[3] << 8);
-        if (rawRegen > 0) maxRegenKw = rawRegen * 0.01;
-        final rawDischgKw = data[4] | (data[5] << 8);
-        if (rawDischgKw > 0) maxDischargeKw = rawDischgKw * 0.01;
+        // Mux 01: power limits (kW) — bytes [1:2] BE, 0.01 kW/bit
+        // Raw data shows ~0xFF0F (652 kW) matching MeatPi's 0x232 value (~631 kW).
+        // Some frames carry transitional 0-value; reject those with > 1000 raw threshold.
+        final rawDischgKw = (data[1] << 8) | data[2];
+        if (rawDischgKw > 1000) maxDischargeKw = rawDischgKw * 0.01;
+        final rawRegenKw = data[4] | (data[5] << 8);
+        if (rawRegenKw > 1000) maxRegenKw = rawRegenKw * 0.01;
         break;
       case 0x04:
-        // Mux 04: current limits (A), 16-bit LE, 0.1 A/bit
-        final rawDischgI = data[3] | (data[4] << 8);
+        // Mux 04: current limits — bytes [4:5] LE, 0.1 A/bit
+        // Raw data: data[4:5] LE ≈ 0xAA0B (43531) → 4353 A, matches MeatPi feed7E2 (~4403 A).
+        // feed7E2 never fires on vehicle bus (data[0] ≠ 0x89), so this is the sole WOT source.
+        final rawDischgI = data[4] | (data[5] << 8);
         if (rawDischgI > 0 && rawDischgI < 0xFFFF) {
           maxDischargeCurrent = rawDischgI * 0.1;
+          wotCurrentLimit = rawDischgI * 0.1;
         }
         break;
     }

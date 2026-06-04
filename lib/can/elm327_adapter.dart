@@ -75,17 +75,14 @@ class Elm327Adapter extends CanAdapter {
     await _sendCmd('ATSP6', delay: 300);   // protocol ISO 15765-4 CAN 500k
     await _sendCmd('ATCAF0', delay: 300);  // CAN auto-formatting off
     await _sendCmd('ATCSM1', delay: 300);  // silent monitoring
-    // Accept only the specific CAN IDs we need — tight filtering dramatically
-    // improves cell coverage by reducing non-BMS traffic on the serial link.
+    // Accept only the CAN IDs verified present on the vehicle OBD bus.
+    // 0x132/0x232/0x302/0x542/0x552 do NOT exist on the vehicle bus.
     // STN chips support multiple STFAP entries (additive pass list).
     await _sendCmd('STFCP', delay: 200);       // clear any existing filters
-    await _sendCmd('STFAP 132,7FF', delay: 200); // pack voltage/current
-    await _sendCmd('STFAP 332,7FF', delay: 200); // SoC (vehicle bus)
-    await _sendCmd('STFAP 392,7FF', delay: 200); // power limits
-    await _sendCmd('STFAP 6F2,7FF', delay: 200); // cell voltages/temps
-    await _sendCmd('STFAP 542,7FF', delay: 200); // serial number pt1
-    await _sendCmd('STFAP 552,7FF', delay: 200); // serial number pt2
-    await _sendCmd('STFAP 7E2,7FF', delay: 200); // WOT current limit
+    await _sendCmd('STFAP 332,7FF', delay: 200); // SoC
+    await _sendCmd('STFAP 392,7FF', delay: 200); // power limits / WOT current
+    await _sendCmd('STFAP 6F2,7FF', delay: 200); // cell voltages / temps
+    await _sendCmd('STFAP 7E2,7FF', delay: 200); // UDS responses (cell data)
 
     _initialized = true;
     onStatus?.call('ELM327 initialized — starting monitor mode');
