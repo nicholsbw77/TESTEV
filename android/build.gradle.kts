@@ -20,35 +20,35 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
-// Inject a namespace for legacy plugins (e.g. flutter_bluetooth_serial 0.4.0)
-// that declare `package` in their AndroidManifest.xml but no `namespace` in
-// build.gradle. AGP 8+ requires an explicit namespace and fails the build
-// otherwise.
-//
-// The earlier evaluationDependsOn(":app") block force-evaluates some projects
-// before this runs, so afterEvaluate can't be registered on them. Apply the fix
-// immediately for already-evaluated projects, otherwise register it to run
-// during evaluation (before AGP's own afterEvaluate creates the variants).
+// Fix legacy plugins (e.g. flutter_bluetooth_serial 0.4.0):
+//   1. Inject namespace from AndroidManifest.xml when missing (AGP 8+ requirement)
+//   2. Bump compileSdk to 34 when set below 31 (android:attr/lStar needs API 31+)
 subprojects {
-    val fixNamespace: Project.() -> Unit = {
+    val fixLegacy: Project.() -> Unit = {
         val androidExtension =
             extensions.findByName("android") as? com.android.build.gradle.BaseExtension
-        if (androidExtension != null && androidExtension.namespace == null) {
-            val manifestFile = file("src/main/AndroidManifest.xml")
-            if (manifestFile.exists()) {
-                val packageName =
-                    Regex("package=\"([^\"]+)\"").find(manifestFile.readText())
-                        ?.groupValues?.get(1)
-                if (packageName != null) {
-                    androidExtension.namespace = packageName
+        if (androidExtension != null) {
+            if (androidExtension.namespace == null) {
+                val manifestFile = file("src/main/AndroidManifest.xml")
+                if (manifestFile.exists()) {
+                    val packageName =
+                        Regex("package=\"([^\"]+)\"").find(manifestFile.readText())
+                            ?.groupValues?.get(1)
+                    if (packageName != null) {
+                        androidExtension.namespace = packageName
+                    }
                 }
+            }
+            val sdk = androidExtension.compileSdkVersion?.removePrefix("android-")?.toIntOrNull()
+            if (sdk != null && sdk < 31) {
+                androidExtension.compileSdkVersion(34)
             }
         }
     }
     if (state.executed) {
-        fixNamespace()
+        fixLegacy()
     } else {
-        afterEvaluate { fixNamespace() }
+        afterEvaluate { fixLegacy() }
     }
 }
 
