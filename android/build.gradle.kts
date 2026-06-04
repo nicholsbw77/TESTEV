@@ -23,14 +23,18 @@ subprojects {
 // Inject a namespace for legacy plugins (e.g. flutter_bluetooth_serial 0.4.0)
 // that declare `package` in their AndroidManifest.xml but no `namespace` in
 // build.gradle. AGP 8+ requires an explicit namespace and fails the build
-// otherwise. Registered here (in root evaluation) so it runs before AGP's own
-// afterEvaluate that creates the variants.
+// otherwise.
+//
+// The earlier evaluationDependsOn(":app") block force-evaluates some projects
+// before this runs, so afterEvaluate can't be registered on them. Apply the fix
+// immediately for already-evaluated projects, otherwise register it to run
+// during evaluation (before AGP's own afterEvaluate creates the variants).
 subprojects {
-    afterEvaluate {
+    val fixNamespace: Project.() -> Unit = {
         val androidExtension =
-            project.extensions.findByName("android") as? com.android.build.gradle.BaseExtension
+            extensions.findByName("android") as? com.android.build.gradle.BaseExtension
         if (androidExtension != null && androidExtension.namespace == null) {
-            val manifestFile = project.file("src/main/AndroidManifest.xml")
+            val manifestFile = file("src/main/AndroidManifest.xml")
             if (manifestFile.exists()) {
                 val packageName =
                     Regex("package=\"([^\"]+)\"").find(manifestFile.readText())
@@ -40,6 +44,11 @@ subprojects {
                 }
             }
         }
+    }
+    if (state.executed) {
+        fixNamespace()
+    } else {
+        afterEvaluate { fixNamespace() }
     }
 }
 
