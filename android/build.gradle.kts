@@ -2,8 +2,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        @Suppress("DEPRECATION")
-        jcenter()
+        maven { url = uri("https://jcenter.bintray.com") }
     }
 }
 
