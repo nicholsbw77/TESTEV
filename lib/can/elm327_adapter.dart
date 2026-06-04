@@ -79,6 +79,7 @@ class Elm327Adapter extends CanAdapter {
     // 0x132/0x232/0x302/0x542/0x552 do NOT exist on the vehicle bus.
     // STN chips support multiple STFAP entries (additive pass list).
     await _sendCmd('STFCP', delay: 200);       // clear any existing filters
+    await _sendCmd('STFAP 132,7FF', delay: 200); // pack voltage/current
     await _sendCmd('STFAP 332,7FF', delay: 200); // SoC
     await _sendCmd('STFAP 392,7FF', delay: 200); // power limits / WOT current
     await _sendCmd('STFAP 6F2,7FF', delay: 200); // cell voltages / temps

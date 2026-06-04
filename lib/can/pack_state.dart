@@ -44,6 +44,7 @@ class PackState {
   final List<double> _sweepCells = List.filled(96, double.nan);
   final List<double> _sweepTemps = List.filled(32, double.nan);
   List<double> _goodCells = List.filled(96, double.nan);
+  DateTime _sweepStart = DateTime.now();
 
   // ── Computed properties ──────────────────────────────────────────────
 
@@ -152,6 +153,9 @@ class PackState {
       for (int i = 0; i < 4; i++) {
         final idx = base + i;
         if (idx < 96) {
+          // CAN 0x6F2 uses 5.0V full-scale (0.000305 V/count) vs
+          // bq76PL536 register direct-read 6.25V full-scale (0.000382 V/count).
+          // Ratio = 1.25x. Both produce the same voltage for the same cell.
           final voltage = values[i] * 0.000305;
           _sweepCells[idx] = voltage;
           // Incremental update: write directly to cells as each frame arrives
@@ -168,6 +172,11 @@ class PackState {
         if (idx < 32) {
           int v = values[i];
           if (v & 0x2000 != 0) v -= 0x4000;
+          // CAN 0x6F2 temp frames appear to carry pre-converted °C (signed,
+          // 0.0122 °C/bit). If temps read wrong, the BMS may send raw 14-bit
+          // NTC ADC counts instead — use Beta equation:
+          //   ratio = raw/16383; r_ntc = 33046 * ratio / (1 - ratio);
+          //   T = 1/(1/298.15 + ln(r_ntc/10000)/4365) - 273.15
           final temp = v * 0.0122;
           _sweepTemps[idx] = temp;
           // Incremental temp update too
@@ -183,6 +192,15 @@ class PackState {
       }
     }
 
+    // Reset stale sweep if >10 seconds without completing all 32 mux frames
+    if (_muxSeen.isNotEmpty &&
+        DateTime.now().difference(_sweepStart).inSeconds > 10) {
+      _muxSeen.clear();
+      _sweepCells.fillRange(0, 96, double.nan);
+      _sweepTemps.fillRange(0, 32, double.nan);
+    }
+
+    if (_muxSeen.isEmpty) _sweepStart = DateTime.now();
     _muxSeen.add(mux);
 
     if (_muxSeen.length >= 32) {
@@ -230,7 +248,7 @@ class PackState {
     final minV = ((data[0] << 8) | data[1]) * 0.010;
     final maxV = ((data[2] << 8) | data[3]) * 0.010;
     maxChargeCurrent = ((data[4] << 8) | data[5]) * 0.1;
-    maxDischargeCurrent = ((data[6] << 8) | data[7]) * 0.12799;
+    maxDischargeCurrent = ((data[6] << 8) | data[7]) * 0.1;
   }
 
   void feed232(List<int> data) {
@@ -308,7 +326,7 @@ class PackState {
         // Some frames carry transitional 0-value; reject those with > 1000 raw threshold.
         final rawDischgKw = (data[1] << 8) | data[2];
         if (rawDischgKw > 1000) maxDischargeKw = rawDischgKw * 0.01;
-        final rawRegenKw = data[4] | (data[5] << 8);
+        final rawRegenKw = (data[4] << 8) | data[5];
         if (rawRegenKw > 1000) maxRegenKw = rawRegenKw * 0.01;
         break;
       case 0x04:
