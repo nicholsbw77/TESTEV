@@ -1,7 +1,7 @@
 name: testev
-description: TESTEV — Tesla EV Battery Diagnostic Tool
+description: TESTEV v2 — Tesla EV Battery Diagnostic Tool (Flutter, Android + iOS)
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.0.0+1
 
 environment:
   sdk: ^3.12.1
@@ -10,11 +10,15 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  flutter_bluetooth_serial: ^0.4.0
+  flutter_bluetooth_serial: ^0.4.0   # v1 compat — will be replaced by native plugin in Phase 5
+  flutter_riverpod: ^2.5.0           # v2 state management (replaces provider)
+  provider: ^6.1.2                   # v1 compat — remove after migration
   permission_handler: ^11.3.0
-  provider: ^6.1.2
   shared_preferences: ^2.2.3
   wakelock_plus: ^1.2.5
+  path_provider: ^2.1.0
+  share_plus: ^7.0.0
+  csv: ^6.0.0
 
 dev_dependencies:
   flutter_test:

@@ -1,17 +1,47 @@
-# testev
+# TESTEV v2 — Tesla EV Battery Diagnostic Tool
 
-A new Flutter project.
+Cross-platform (Android + iOS) real-time battery diagnostic app for Tesla vehicles.
 
-## Getting Started
+## What it does
 
-This project is a starting point for a Flutter application.
+- Connects to Tesla Model S via **OBDLink MX/LX** (Bluetooth) or **MeatPi/WiCAN** (WiFi)
+- Decodes BMS CAN frames: 96 cell voltages, 32 temperatures, pack voltage/current/SOC, contactor state, isolation resistance
+- Customizable live dashboard with color-coded cell heatmap, gauges, and alerts
+- Session logging to CSV (cross-compatible with the Python bench tool)
+- Replay mode for development and testing without hardware
 
-A few resources to get you started if this is your first Flutter project:
+## Architecture
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```
+UI Layer         → Flutter widgets, customizable dashboard
+Data Layer       → PackState reactive model, threshold evaluation, CSV logger
+Decoder Layer    → CAN frame decoders (0x6F2, 0x102, 0x302, 0x312, 0x322)
+Protocol Layer   → ELM327 AT engine, SLCAN/raw CAN parser
+Transport Layer  → Bluetooth SPP (native), WiFi TCP (Dart), Replay
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Branches
+
+- **`main`** — Original v1 prototype
+- **`v2`** — Clean-architecture rebuild (this branch)
+
+## Project structure
+
+See `docs/specs/2025-06-05-testev-v2-design.md` for the full design spec.
+
+## Related repos
+
+- [TESLA-BMB](https://github.com/nicholsbw77/TESLA-BMB) — Python Qt6 GUI for Gen1 BMB bench diagnostics (612500 baud UART)
+- [tesla-bms-bench](https://github.com/nicholsbw77/tesla-bms-bench) — Python bench testing tools
+
+## Getting started
+
+```bash
+flutter pub get
+flutter run
+```
+
+## Hardware tested
+
+- OBDLink MX+ (Bluetooth SPP) — STN2120, handles ~1000 frames/sec
+- MeatPi WiCAN (WiFi TCP) — SLCAN protocol, raw CAN bus access
