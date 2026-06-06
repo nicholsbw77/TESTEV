@@ -47,6 +47,15 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.obdsol.obdlink</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>external-accessory</string>
+		<string>bluetooth-central</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>TESTEV needs Bluetooth to connect to OBDLink MX+ for vehicle diagnostics</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
