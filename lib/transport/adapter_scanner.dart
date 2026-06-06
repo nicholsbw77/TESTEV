@@ -22,7 +22,7 @@ class AdapterScanner {
   static Future<List<DetectedAdapter>> scan() async {
     final adapters = <DetectedAdapter>[];
 
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
         final btDevices = await BluetoothSppTransport.scan();
         for (final d in btDevices) {

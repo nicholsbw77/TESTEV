@@ -211,12 +211,15 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
             const SizedBox(height: 24),
 
             // Bluetooth section
-            if (Platform.isAndroid) ...[
+            if (Platform.isAndroid || Platform.isIOS) ...[
               Row(
                 children: [
-                  const Expanded(
-                    child: Text('Bluetooth (OBDLink)',
-                        style: TextStyle(
+                  Expanded(
+                    child: Text(
+                        Platform.isIOS
+                            ? 'Bluetooth (OBDLink MFi / BLE)'
+                            : 'Bluetooth (OBDLink)',
+                        style: const TextStyle(
                             fontSize: 18, fontWeight: FontWeight.bold)),
                   ),
                   IconButton(
@@ -227,11 +230,15 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
               ),
               const SizedBox(height: 8),
               if (btAdapters.isEmpty)
-                const Card(
+                Card(
                   child: Padding(
-                    padding: EdgeInsets.all(12),
-                    child: Text('No Bluetooth adapters found.\n'
-                        'Pair your OBDLink in system Bluetooth settings first.'),
+                    padding: const EdgeInsets.all(12),
+                    child: Text(Platform.isIOS
+                        ? 'No Bluetooth adapters found.\n'
+                          'Make sure your OBDLink is powered on.\n'
+                          'MFi devices connect automatically; BLE devices need scanning.'
+                        : 'No Bluetooth adapters found.\n'
+                          'Pair your OBDLink in system Bluetooth settings first.'),
                   ),
                 ),
               ...btAdapters.map((a) => Card(
