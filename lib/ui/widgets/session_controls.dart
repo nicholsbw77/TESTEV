@@ -57,7 +57,7 @@ class SessionControlsWidget extends ConsumerWidget {
               IconButton(
                 onPressed: () {
                   final path = logger!.filePath!;
-                  SharePlus.instance.share(ShareParams(files: [XFile(path)]));
+                  Share.shareXFiles([XFile(path)]);
                 },
                 icon: const Icon(Icons.share),
               ),

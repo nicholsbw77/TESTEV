@@ -59,9 +59,7 @@ class _SessionLogScreenState extends State<SessionLogScreen> {
                   trailing: IconButton(
                     icon: const Icon(Icons.share),
                     onPressed: () {
-                      SharePlus.instance.share(
-                        ShareParams(files: [XFile(file.path)]),
-                      );
+                      Share.shareXFiles([XFile(file.path)]);
                     },
                   ),
                 );
