@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../transport/adapter_scanner.dart';
 import '../../transport/adapter_transport.dart';
 import '../../transport/wifi_tcp_transport.dart';
@@ -20,17 +23,58 @@ class ConnectionScreen extends ConsumerStatefulWidget {
 }
 
 class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
-  final _hostController = TextEditingController(text: '192.168.4.1');
-  final _portController = TextEditingController(text: '3333');
+  final _hostController = TextEditingController();
+  final _portController = TextEditingController();
 
   List<DetectedAdapter> _adapters = [];
   bool _scanning = false;
   String _status = '';
   bool _connecting = false;
+  bool _permissionsGranted = false;
 
   @override
   void initState() {
     super.initState();
+    _loadSavedSettings();
+    _requestPermissions();
+  }
+
+  Future<void> _loadSavedSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _hostController.text = prefs.getString('wifi_host') ?? '192.168.4.1';
+        _portController.text = prefs.getString('wifi_port') ?? '3333';
+      });
+    }
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      final statuses = await [
+        Permission.bluetoothConnect,
+        Permission.bluetoothScan,
+        Permission.locationWhenInUse,
+      ].request();
+
+      final allGranted = statuses.values.every(
+        (s) => s.isGranted || s.isLimited,
+      );
+
+      if (mounted) {
+        setState(() => _permissionsGranted = allGranted);
+        if (!allGranted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Bluetooth & Location permissions are required'),
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+      }
+    } else {
+      _permissionsGranted = true;
+    }
     _scan();
   }
 
@@ -74,7 +118,12 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
 
       final decoder = ref.read(decoderEngineProvider);
       final parser = RawCanParser();
-      parser.frameStream.listen((frame) => decoder.dispatch(frame));
+      parser.setFormat(RawFormat.slcan);
+
+      parser.frameStream.listen((frame) {
+        decoder.dispatch(frame);
+        state.fps = parser.fps;
+      });
       transport.dataStream.listen((data) => parser.feedBytes(data));
 
       ref.read(connectionStateProvider.notifier).state = true;
@@ -105,6 +154,8 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
       );
       await transport.connect();
 
+      setState(() => _status = 'Connected — initializing ELM327...');
+
       final state = ref.read(packStateProvider);
       state.connected = true;
       state.vehicleBus = true;
@@ -114,7 +165,10 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
       final decoder = ref.read(decoderEngineProvider);
       final engine = Elm327Engine();
 
-      engine.frameStream.listen((frame) => decoder.dispatch(frame));
+      engine.frameStream.listen((frame) {
+        decoder.dispatch(frame);
+        state.fps = engine.fps;
+      });
       transport.dataStream.listen((data) => engine.feedBytes(data));
 
       // Send init sequence
@@ -126,6 +180,8 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
         await Future.delayed(const Duration(milliseconds: 300));
       }
       engine.markInitialized();
+
+      setState(() => _status = 'ELM327 initialized — monitoring');
 
       ref.read(connectionStateProvider.notifier).state = true;
 
@@ -262,7 +318,6 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
             const SizedBox(height: 8),
             ElevatedButton.icon(
               onPressed: _connecting ? null : () {
-                // TODO: File picker for replay log
                 setState(() => _status = 'Replay file picker not yet implemented');
               },
               icon: const Icon(Icons.play_circle_outline),

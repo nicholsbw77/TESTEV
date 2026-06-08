@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'adapter_transport.dart';
@@ -34,6 +35,16 @@ class WifiTcpTransport extends AdapterTransport {
         timeout: const Duration(seconds: 5));
     _connected = true;
 
+    // SLCAN init: close any open channel, set 500k bitrate, open
+    _socket!.add(utf8.encode('\r'));
+    await Future.delayed(const Duration(milliseconds: 100));
+    _socket!.add(utf8.encode('C\r'));
+    await Future.delayed(const Duration(milliseconds: 100));
+    _socket!.add(utf8.encode('S6\r'));
+    await Future.delayed(const Duration(milliseconds: 100));
+    _socket!.add(utf8.encode('O\r'));
+    await Future.delayed(const Duration(milliseconds: 100));
+
     _socket!.listen(
       (data) => _dataController?.add(Uint8List.fromList(data)),
       onError: (e) {
@@ -55,7 +66,13 @@ class WifiTcpTransport extends AdapterTransport {
   @override
   Future<void> disconnect() async {
     _connected = false;
-    await _socket?.close();
+    if (_socket != null) {
+      try {
+        _socket!.add(utf8.encode('C\r'));
+        await _socket!.flush();
+        await _socket!.close();
+      } catch (_) {}
+    }
     _socket = null;
     await _dataController?.close();
     _dataController = null;
