@@ -1,0 +1,159 @@
+{
+  "columns": 4,
+  "pack_new_kwh": 81.5,
+  "metric": false,
+  "tiles": [
+    {
+      "type": "gauge",
+      "signal": "soc",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "gauge",
+      "signal": "pack_power",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "gauge",
+      "signal": "vehicle_speed",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "gauge",
+      "signal": "motor_rpm",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "pack_voltage",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "pack_current",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "battery_health",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "nominal_full_energy",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "sparkline",
+      "signal": "batt_temp_avg",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "sparkline",
+      "signal": "rear_inv_dissipation",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "dcdc_inlet_temp",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "dcdc_output_voltage",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "cellgrid",
+      "signal": "",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 2
+    },
+    {
+      "type": "modtemps",
+      "signal": "",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "status",
+      "signal": "",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "bar",
+      "signal": "cell_delta_mv",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "bar",
+      "signal": "max_discharge_kw",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "max_regen_kw",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    },
+    {
+      "type": "number",
+      "signal": "odometer",
+      "title": "",
+      "lo": null,
+      "hi": null,
+      "span": 1
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Qt binding — pick ONE:
+PySide6>=6.5          # desktops, 64-bit ARM SBCs (Pi 4/5)
+# PyQt5>=5.15         # older 32-bit ARM boards instead of PySide6
+
+# Only needed for --source socketcan:
+python-can>=4.0; sys_platform == "linux"
