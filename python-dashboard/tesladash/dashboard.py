@@ -32,7 +32,8 @@ class AddTileDialog(QtWidgets.QDialog):
 
         self.type_box = QtWidgets.QComboBox()
         self.type_box.addItems(["gauge", "number", "bar", "sparkline",
-                                "cellgrid", "modtemps", "status"])
+                                "cellgrid", "modtable", "packdelta",
+                                "modtemps", "status"])
 
         self.signal_box = QtWidgets.QComboBox()
         for name, spec in sorted(SIGNALS.items(), key=lambda kv: kv[1].label):
@@ -71,7 +72,8 @@ class AddTileDialog(QtWidgets.QDialog):
     def _update_hint(self):
         name = self.signal_box.currentData()
         spec = SIGNALS.get(name)
-        needs_signal = self.type_box.currentText() not in ("cellgrid", "modtemps", "status")
+        needs_signal = self.type_box.currentText() not in (
+            "cellgrid", "modtable", "packdelta", "modtemps", "status")
         self.signal_box.setEnabled(needs_signal)
         if spec and needs_signal:
             v = "verified on this car" if spec.verified else "community decode — verify!"
@@ -92,7 +94,7 @@ class AddTileDialog(QtWidgets.QDialog):
         return TileConfig(type=t, signal=signal or "",
                           title=self.title_edit.text().strip(),
                           lo=_f(self.lo_edit), hi=_f(self.hi_edit),
-                          span=2 if t == "cellgrid" else 1)
+                          span=2 if t in ("cellgrid", "modtable") else 1)
 
 
 # ── tile grid with drag-drop reorder ───────────────────────────────────────

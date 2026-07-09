@@ -14,7 +14,8 @@ DEFAULT_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
     "tesladash", "layout.json")
 
-TILE_TYPES = ("gauge", "bar", "number", "sparkline", "cellgrid", "modtemps", "status")
+TILE_TYPES = ("gauge", "bar", "number", "sparkline", "cellgrid", "modtable",
+              "packdelta", "modtemps", "status")
 
 
 @dataclass
@@ -75,13 +76,35 @@ def default_config() -> DashConfig:
         T("sparkline", "rear_inv_dissipation"),
         T("number", "dcdc_inlet_temp"),
         T("number", "dcdc_output_voltage"),
-        T("cellgrid", span=2),
-        T("modtemps", span=1),
+        T("modtable", span=2),
+        T("packdelta", span=1),
         T("status", span=1),
         T("bar", "cell_delta_mv"),
         T("bar", "max_discharge_kw"),
         T("number", "max_regen_kw"),
         T("number", "odometer"),
+    ])
+
+
+def bench_config() -> DashConfig:
+    """Bench-tester layout: module/brick table front and center, matching the
+    Flutter app's bench screen. Use with --config layouts/bench.json."""
+    T = TileConfig
+    return DashConfig(columns=4, tiles=[
+        T("packdelta"),
+        T("number", "soc"),
+        T("number", "pack_voltage"),
+        T("number", "pack_current"),
+        T("modtable", span=3),
+        T("cellgrid", span=1),
+        T("modtemps"),
+        T("number", "max_discharge_kw", title="Max kW"),
+        T("number", "wot_current_limit", title="WOT A"),
+        T("number", "kwh_charged"),
+        T("bar", "cell_delta_mv"),
+        T("sparkline", "cell_min"),
+        T("sparkline", "batt_temp_avg"),
+        T("status"),
     ])
 
 

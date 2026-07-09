@@ -464,6 +464,199 @@ class ModuleTempsTile(Tile):
         p.end()
 
 
+# ── bench-tester module/brick table ────────────────────────────────────────
+# Faithful port of the Flutter bench tester's cell grid
+# (lib/screens/dashboard_screen.dart): 16 module rows x 6 brick voltages,
+# colored by deviation from pack average, plus per-module Δ spread and temp.
+
+BENCH_HDR = "#90caf9"          # header / module labels
+BENCH_LOW2 = "#7f0000"         # brick > 12 mV below average
+BENCH_LOW1 = "#7f4000"         # brick > 6 mV below average
+BENCH_HIGH = "#0d3b6e"         # brick > 6 mV above average
+BENCH_OK = "#1e4d2b"           # within ±6 mV of average
+BENCH_NA = "#1a1a2e"           # no data
+BENCH_GOOD = "#00e676"
+BENCH_WARN = "#ffeb3b"
+BENCH_BAD = "#ff1744"
+
+
+def _bench_cell_color(v: float, avg: float) -> QtGui.QColor:
+    dev = (v - avg) * 1000.0
+    if dev < -12:
+        return _color(BENCH_LOW2)
+    if dev < -6:
+        return _color(BENCH_LOW1)
+    if dev > 6:
+        return _color(BENCH_HIGH)
+    return _color(BENCH_OK)
+
+
+def _delta_color(mv: float) -> str:
+    if mv <= 20:
+        return BENCH_GOOD
+    if mv <= 50:
+        return BENCH_WARN
+    return BENCH_BAD
+
+
+def _mono_font(base: QtGui.QFont, pt: float, bold: bool = False) -> QtGui.QFont:
+    f = QtGui.QFont(base)
+    f.setFamily("Consolas")
+    f.setStyleHint(QtGui.QFont.TypeWriter)
+    f.setPointSizeF(max(6.0, pt))
+    f.setBold(bold)
+    return f
+
+
+class ModuleTableTile(Tile):
+    # column flex: Mod, C1..C6, Δ, temp — same proportions as the bench tester
+    FLEX = (1.1, 2, 2, 2, 2, 2, 2, 1.3, 1.3)
+
+    def __init__(self, cfg, parent=None):
+        super().__init__(cfg, parent)
+        self.setMinimumSize(430, 430)
+
+    def title_text(self):
+        return self.cfg.title or "Modules / Bricks"
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)          # stylesheet background + border
+        if not hasattr(self, "state"):
+            return
+        p = self._painter()
+        self._draw_title(p)
+        st = self.state
+        metric = getattr(self, "metric", False)
+        avg = st.cell_avg_or_nan()
+        if not is_num(avg):
+            avg = 4.0
+
+        area = QtCore.QRectF(10, 26, self.width() - 20, self.height() - 34)
+        header_h = 16.0
+        row_h = (area.height() - header_h) / 16.0
+        total_flex = sum(self.FLEX)
+        xs, x = [], area.left()
+        for fl in self.FLEX:
+            w = area.width() * fl / total_flex
+            xs.append((x, w))
+            x += w
+
+        cell_pt = min(11.0, max(6.5, row_h * 0.42))
+        hdr_font = _mono_font(self.font(), cell_pt, bold=True)
+        cell_font = _mono_font(self.font(), cell_pt)
+
+        # header
+        p.setFont(hdr_font)
+        p.setPen(_color(BENCH_HDR))
+        headers = ("Mod", "C1", "C2", "C3", "C4", "C5", "C6", "Δ mV",
+                   "\N{DEGREE SIGN}C" if metric else "\N{DEGREE SIGN}F")
+        for (cx, cw), h in zip(xs, headers):
+            p.drawText(QtCore.QRectF(cx, area.top(), cw, header_h),
+                       Qt.AlignCenter, h)
+
+        for mod in range(16):
+            y = area.top() + header_h + mod * row_h
+            # module label
+            p.setFont(hdr_font)
+            p.setPen(_color(BENCH_HDR))
+            p.drawText(QtCore.QRectF(xs[0][0], y, xs[0][1], row_h),
+                       Qt.AlignCenter, f"M{mod + 1:02d}")
+            # 6 bricks
+            p.setFont(cell_font)
+            for ci, v in enumerate(st.module_cells(mod)):
+                cx, cw = xs[1 + ci]
+                r = QtCore.QRectF(cx + 1, y + 1, cw - 2, row_h - 2)
+                valid = is_num(v) and v > 0.5
+                p.setPen(Qt.NoPen)
+                p.setBrush(_bench_cell_color(v, avg) if valid else _color(BENCH_NA))
+                p.drawRoundedRect(r, 3, 3)
+                p.setPen(_color("#e0e0e0" if valid else DIM))
+                p.drawText(r, Qt.AlignCenter, f"{v:.3f}" if valid else "—")
+            # module Δ spread
+            spread = st.module_spread_mv(mod)
+            p.setPen(_color(BENCH_BAD if spread > 10 else
+                            BENCH_WARN if spread > 5 else BENCH_GOOD))
+            p.drawText(QtCore.QRectF(xs[7][0], y, xs[7][1], row_h),
+                       Qt.AlignCenter, f"{spread:.1f}" if spread > 0 else "—")
+            # module temp (sensor T1, like the bench tester)
+            t1 = st.module_temps[mod * 2]
+            if is_num(t1):
+                shown = t1 if metric else t1 * 9 / 5 + 32
+                txt = f"{shown:.0f}"
+            else:
+                txt = "—"
+            p.setPen(_color("#cfd8dc"))
+            p.drawText(QtCore.QRectF(xs[8][0], y, xs[8][1], row_h),
+                       Qt.AlignCenter, txt)
+        p.end()
+
+
+class PackDeltaTile(Tile):
+    """The bench tester's hero card: pack Δ in mV with min/avg/max bricks."""
+
+    def __init__(self, cfg, parent=None):
+        super().__init__(cfg, parent)
+        self.setMinimumSize(210, 190)
+
+    def title_text(self):
+        return self.cfg.title or "Pack Delta"
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)          # stylesheet background + border
+        if not hasattr(self, "state"):
+            return
+        p = self._painter()
+        self._draw_title(p)
+        st = self.state
+        delta = st.num("cell_delta_mv")
+        have = is_num(delta) and delta > 0
+        col = _delta_color(delta) if have else DIM
+
+        # big Δ value
+        f = _mono_font(self.font(), self.font().pointSizeF() * 2.9, bold=True)
+        p.setFont(f)
+        p.setPen(_color(col))
+        p.drawText(QtCore.QRectF(0, 20, self.width(), self.height() * 0.36),
+                   Qt.AlignCenter, f"{delta:.1f}" if have else "—")
+        p.setFont(_mono_font(self.font(), self.font().pointSizeF(), bold=True))
+        p.drawText(QtCore.QRectF(0, 22 + self.height() * 0.36, self.width(), 18),
+                   Qt.AlignCenter, "mV")
+
+        # color bar
+        bar = QtCore.QRectF(16, self.height() - 66, self.width() - 32, 6)
+        p.setPen(Qt.NoPen)
+        p.setBrush(_color(col))
+        p.drawRoundedRect(bar, 3, 3)
+
+        # min / avg / max with module locations
+        vmin, vavg, vmax = (st.num("cell_min"), st.num("cell_avg"),
+                            st.num("cell_max"))
+        small = _mono_font(self.font(), self.font().pointSizeF() * 0.82)
+        tiny = _mono_font(self.font(), self.font().pointSizeF() * 0.72)
+        cols = (
+            ("MIN", vmin, f"M{st.min_cell_index() // 6 + 1:02d}"),
+            ("AVG", vavg, ""),
+            ("MAX", vmax, f"M{st.max_cell_index() // 6 + 1:02d}"),
+        )
+        w3 = (self.width() - 24) / 3
+        for i, (label, v, sub) in enumerate(cols):
+            x = 12 + i * w3
+            p.setFont(tiny)
+            p.setPen(_color(DIM))
+            p.drawText(QtCore.QRectF(x, self.height() - 54, w3, 13),
+                       Qt.AlignCenter, label)
+            p.setFont(small)
+            p.setPen(_color("#cfd8dc"))
+            p.drawText(QtCore.QRectF(x, self.height() - 41, w3, 15),
+                       Qt.AlignCenter, f"{v:.4f}V" if is_num(v) else "—")
+            if sub and is_num(v):
+                p.setFont(tiny)
+                p.setPen(_color(DIM))
+                p.drawText(QtCore.QRectF(x, self.height() - 26, w3, 13),
+                           Qt.AlignCenter, sub)
+        p.end()
+
+
 # ── status / link tile ─────────────────────────────────────────────────────
 
 
@@ -508,6 +701,8 @@ TILE_CLASSES = {
     "bar": BarTile,
     "sparkline": SparklineTile,
     "cellgrid": CellGridTile,
+    "modtable": ModuleTableTile,
+    "packdelta": PackDeltaTile,
     "modtemps": ModuleTempsTile,
     "status": StatusTile,
 }

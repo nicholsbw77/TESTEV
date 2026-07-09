@@ -139,8 +139,17 @@ impractical. The realistic ways people run a dashboard like this in the car:
   be **dragged onto each other to reorder**. `+ Add tile…` lists every signal
   in the catalog — `✓` means capture-verified, `⚠` means community decode.
 * Tile types: `gauge` (270° arc), `number`, `bar`, `sparkline` (30 min
-  history), `cellgrid` (96-cell voltage heatmap), `modtemps` (16-module
+  history), `cellgrid` (96-cell voltage heatmap), `modtable` (bench-tester
+  module/brick table: 16 modules × C1–C6 voltages colored by deviation from
+  pack average, per-module Δ spread and temp), `packdelta` (pack Δ mV hero
+  card with min/avg/max brick + module locations), `modtemps` (16-module
   temperature grid), `status`.
+* A ready-made bench layout mirroring the Flutter tester ships in
+  `layouts/bench.json`:
+
+  ```bash
+  python -m tesladash --source obdlink --config layouts/bench.json
+  ```
 * Columns (3–6), metric/imperial units, fullscreen — all in the menu.
 * Layout persists to `~/.config/tesladash/layout.json` (see
   `layouts/default.json` for the format; `--config` to use another file).

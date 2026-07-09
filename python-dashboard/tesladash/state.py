@@ -81,6 +81,33 @@ class VehicleState:
         valid = [c for c in self.cells if is_num(c) and c > 0.5]
         return sum(valid) / len(valid) if valid else NAN
 
+    # ── module/brick helpers (mirror the Flutter app's PackState) ───────
+
+    def module_cells(self, mod: int) -> list[float]:
+        """The 6 brick voltages of module `mod` (0-15)."""
+        return self.cells[mod * 6:(mod + 1) * 6]
+
+    def module_spread_mv(self, mod: int) -> float:
+        valid = [v for v in self.module_cells(mod) if is_num(v) and v > 0.5]
+        if len(valid) < 2:
+            return 0.0
+        return (max(valid) - min(valid)) * 1000.0
+
+    def _extreme_cell_index(self, use_max: bool) -> int:
+        best, idx = None, 0
+        for i, v in enumerate(self.cells):
+            if not (is_num(v) and v > 0.5):
+                continue
+            if best is None or (v > best if use_max else v < best):
+                best, idx = v, i
+        return idx
+
+    def min_cell_index(self) -> int:
+        return self._extreme_cell_index(use_max=False)
+
+    def max_cell_index(self) -> int:
+        return self._extreme_cell_index(use_max=True)
+
     # ── history ─────────────────────────────────────────────────────────
 
     def sample_history(self) -> None:
