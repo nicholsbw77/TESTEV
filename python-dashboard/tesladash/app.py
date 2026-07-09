@@ -25,11 +25,18 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="tesladash",
         description="Customizable CAN dashboard for a 2013 Tesla Model S (listen-only).")
-    ap.add_argument("--source", choices=("sim", "socketcan", "wican", "replay"),
+    ap.add_argument("--source", choices=("sim", "socketcan", "wican", "obdlink", "replay"),
                     default="sim", help="frame source (default: sim)")
     ap.add_argument("--channel", default="can0", help="socketcan channel")
     ap.add_argument("--host", default="192.168.50.158", help="WiCAN host")
     ap.add_argument("--port", type=int, default=3333, help="WiCAN TCP port")
+    ap.add_argument("--serial-port", default="auto",
+                    help="OBDLink COM port, e.g. COM5 (default: auto-detect)")
+    ap.add_argument("--baud", type=int, default=115200, help="OBDLink serial baud")
+    ap.add_argument("--ids", default="",
+                    help="OBDLink hardware-filter CAN IDs, comma-separated hex "
+                         "(default: 132,332,392,6F2,7E2 — the battery set; "
+                         "Bluetooth bandwidth is limited, add IDs sparingly)")
     ap.add_argument("--log", default="", help="candump -L file for --source replay")
     ap.add_argument("--speed", type=float, default=1.0, help="replay speed factor")
     ap.add_argument("--bus", choices=("vehicle", "bms"), default="vehicle",
@@ -72,10 +79,18 @@ def main(argv=None) -> int:
     decoder = TeslaDecoder(state, vehicle_bus=(args.bus == "vehicle"))
     cfg = cfgmod.load(args.config)
 
+    try:
+        filter_ids = tuple(int(x, 16) for x in args.ids.split(",") if x.strip())
+    except ValueError:
+        print(f"--ids must be comma-separated hex CAN IDs, got: {args.ids}",
+              file=sys.stderr)
+        return 2
+
     frame_q: queue.Queue = queue.Queue(maxsize=20000)
     source = make_source(args.source, frame_q, channel=args.channel,
                          host=args.host, port=args.port,
-                         log=args.log, speed=args.speed)
+                         serial_port=args.serial_port, baud=args.baud,
+                         ids=filter_ids, log=args.log, speed=args.speed)
     state.source_desc = source.description
     source.start()
 
@@ -97,8 +112,9 @@ def main(argv=None) -> int:
         except queue.Empty:
             pass
         state.connected = source.connected
-        if source.error and not state.source_desc.endswith(source.error):
-            state.source_desc = f"{source.description} — {source.error}"
+        # description can change after start (e.g. OBDLink port auto-detect)
+        state.source_desc = (f"{source.description} — {source.error}"
+                             if source.error else source.description)
         state.recompute_derived(cfg.pack_new_kwh)
         state.sample_history()
         win.tick()

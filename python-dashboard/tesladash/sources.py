@@ -23,16 +23,16 @@ class Source(threading.Thread):
     def __init__(self, out_queue: queue.Queue):
         super().__init__(daemon=True)
         self.q = out_queue
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()
         self.error: str | None = None
         self.connected = False
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_evt.set()
 
     @property
     def stopping(self) -> bool:
-        return self._stop.is_set()
+        return self._stop_evt.is_set()
 
     def emit(self, can_id: int, data: bytes) -> None:
         try:
@@ -133,6 +133,169 @@ class SlcanTcpSource(Source):
                 self.emit(can_id, data)
         except (ValueError, IndexError):
             pass  # noise / partial line
+
+
+# ── ELM327/STN over a serial port (OBDLink MX+ via Bluetooth SPP) ─────────
+# On Windows 11 the paired MX+ shows up as an outgoing "Standard Serial over
+# Bluetooth link" COM port; on Linux it's /dev/rfcomm0. Init + STN hardware
+# filters are the exact sequence lib/can/elm327_adapter.dart verified on this
+# adapter and car. ATCSM1 = silent monitoring: the adapter never ACKs a frame.
+
+#: CAN IDs verified present on the vehicle OBD bus (Flutter app's filter set).
+OBDLINK_DEFAULT_IDS = (0x132, 0x332, 0x392, 0x6F2, 0x7E2)
+
+
+class Elm327SerialSource(Source):
+    def __init__(self, out_queue, port: str = "auto", baud: int = 115200,
+                 ids=OBDLINK_DEFAULT_IDS, _serial=None):
+        super().__init__(out_queue)
+        self.port, self.baud = port, baud
+        self.ids = tuple(ids) if ids else OBDLINK_DEFAULT_IDS
+        self._injected = _serial          # test hook: fake serial object
+        self.description = f"OBDLink {port}"
+
+    # — connection —
+
+    def _open(self):
+        if self._injected is not None:
+            return self._injected
+        try:
+            import serial  # pyserial, lazy so it stays optional
+        except ImportError:
+            self.error = "pyserial not installed (pip install pyserial)"
+            return None
+        if self.port and self.port != "auto":
+            try:
+                return serial.Serial(self.port, self.baud, timeout=1)
+            except Exception as exc:
+                self.error = f"cannot open {self.port}: {exc}"
+                return None
+        ser = self._autodetect(serial)
+        if ser is None and not self.error:
+            self.error = ("no OBDLink found — pass --serial-port COMx "
+                          "(see Bluetooth COM Ports in Windows settings)")
+        return ser
+
+    def _autodetect(self, serial):
+        """Probe COM ports with ATI, prefer ones that look like an OBDLink.
+        Opening a Bluetooth COM port is what triggers the BT connection, so
+        each probe can take a few seconds."""
+        try:
+            from serial.tools import list_ports
+            ports = list(list_ports.comports())
+        except Exception as exc:
+            self.error = f"cannot enumerate serial ports: {exc}"
+            return None
+        ports.sort(key=lambda p: ("obdlink" not in (p.description or "").lower(),
+                                  "bluetooth" not in (p.description or "").lower(),
+                                  p.device))
+        for p in ports:
+            if self.stopping:
+                return None
+            try:
+                ser = serial.Serial(p.device, self.baud, timeout=2, write_timeout=3)
+            except Exception:
+                continue
+            try:
+                ser.reset_input_buffer()
+                ser.write(b"\rATI\r")
+                time.sleep(0.6)
+                resp = ser.read(256).upper()
+                if b"ELM" in resp or b"STN" in resp or b"OBDLINK" in resp:
+                    self.description = f"OBDLink {p.device}"
+                    return ser
+            except Exception:
+                pass
+            try:
+                ser.close()
+            except Exception:
+                pass
+        return None
+
+    # — protocol —
+
+    def _cmd(self, ser, cmd: bytes, timeout: float = 2.0) -> bytes:
+        """Send one AT/ST command, collect the reply up to the '>' prompt."""
+        ser.reset_input_buffer()
+        ser.write(cmd + b"\r")
+        resp, deadline = b"", time.time() + timeout
+        while time.time() < deadline:
+            chunk = ser.read(64)
+            if chunk:
+                resp += chunk
+                if b">" in resp:
+                    break
+        return resp
+
+    def _init_adapter(self, ser) -> None:
+        self._cmd(ser, b"ATZ", timeout=3.0)   # reset
+        for cmd in (b"ATE0",     # echo off
+                    b"ATL0",     # linefeeds off
+                    b"ATH1",     # headers on (we need the CAN ID)
+                    b"ATS0",     # spaces off (compact hex)
+                    b"ATSP6",    # ISO 15765-4 CAN 500k
+                    b"ATCAF0",   # raw frames, no ISO-TP formatting
+                    b"ATCSM1",   # silent monitoring — never ACK the bus
+                    b"STFCP"):   # clear STN pass filters
+            self._cmd(ser, cmd)
+        for can_id in self.ids:  # additive STN pass list
+            self._cmd(ser, b"STFAP %03X,7FF" % can_id)
+
+    def run(self) -> None:
+        ser = self._open()
+        if ser is None:
+            return
+        try:
+            self._init_adapter(ser)
+            ser.write(b"ATMA\r")             # monitor-all (through the filters)
+            self.connected = True
+            buf = b""
+            while not self.stopping:
+                chunk = ser.read(256)
+                if not chunk:
+                    continue
+                buf += chunk
+                # ELM output delimits lines with \r; '>' means monitor stopped
+                *lines, buf = buf.replace(b">", b"\r>").split(b"\r")
+                restart = False
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if (line.startswith(b">") or b"BUFFER FULL" in line
+                            or b"STOPPED" in line or b"CAN ERROR" in line):
+                        restart = True
+                        continue
+                    frame = self.parse_monitor_line(line)
+                    if frame:
+                        self.emit(*frame)
+                if restart and not self.stopping:
+                    ser.write(b"ATMA\r")
+                if len(buf) > 4096:          # runaway garbage guard
+                    buf = b""
+        except Exception as exc:
+            self.error = str(exc)
+        finally:
+            self.connected = False
+            try:
+                ser.write(b"\r")             # leave monitor mode
+                time.sleep(0.2)
+                ser.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def parse_monitor_line(line: bytes):
+        """ATH1+ATS0 monitor line: 3 hex ID chars + hex data pairs,
+        e.g. b'13288B8FB2E00000000' → (0x132, 8 bytes). Returns None on noise."""
+        if len(line) < 5 or (len(line) - 3) % 2:
+            return None
+        try:
+            can_id = int(line[:3], 16)
+            data = bytes.fromhex(line[3:3 + 16].decode())
+        except ValueError:
+            return None
+        return can_id, data
 
 
 # ── candump log replay (verification tool) ────────────────────────────────
@@ -323,4 +486,8 @@ def make_source(kind: str, out_queue, **kw) -> Source:
                               port=kw.get("port", 3333))
     if kind == "replay":
         return CandumpReplaySource(out_queue, path=kw["log"], speed=kw.get("speed", 1.0))
+    if kind == "obdlink":
+        return Elm327SerialSource(out_queue, port=kw.get("serial_port", "auto"),
+                                  baud=kw.get("baud", 115200),
+                                  ids=kw.get("ids") or OBDLINK_DEFAULT_IDS)
     raise ValueError(f"unknown source: {kind}")

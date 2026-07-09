@@ -63,8 +63,37 @@ candump -L can0 > drive.log         # record on the car
 python -m tesladash --source replay --log drive.log
 ```
 
-The OBDLink MX+ (Bluetooth ELM327) path is intentionally left to the Flutter
-app — its monitor mode is too slow to feed a live dashboard well.
+### 4. OBDLink MX+ over Bluetooth (Windows 11 / macOS / Linux)
+
+```bash
+pip install pyserial
+python -m tesladash --source obdlink                    # auto-detects the COM port
+python -m tesladash --source obdlink --serial-port COM5 # or name it explicitly
+```
+
+Windows 11 setup:
+
+1. Hold the MX+ button until it blinks, then **Settings → Bluetooth & devices
+   → Add device** and pair it (it may show as `OBDLink MX+`).
+2. Auto-detect probes your COM ports with `ATI` and picks the one that answers
+   like an OBDLink/ELM. If you'd rather pin it: **Settings → Bluetooth &
+   devices → Devices → More Bluetooth settings → COM Ports** and use the
+   **outgoing** port (e.g. `COM5`).
+3. Plug the MX+ into the car's OBD port / diagnostic harness, then run the
+   command. First connect after pairing can take a few seconds.
+
+It uses the same verified init the Flutter app runs on this adapter
+(`ATSP6` 500k, `ATCAF0`, **`ATCSM1` silent monitoring — never ACKs the bus**,
+`STFCP` + `STFAP` hardware filters, `ATMA`).
+
+**Bandwidth caveat:** Bluetooth ELM monitor mode can't carry the full 500k
+bus, so frames are hardware-filtered to the battery set verified on this car:
+`132,332,392,6F2,7E2` (pack V/I, SoC, power limits, cell voltages + module
+temps). That covers every ✓-verified tile; motor/inverter tiles will stay
+blank. You can extend the pass list — e.g.
+`--ids 132,332,392,6F2,106,116,266` — but each added ID eats link budget and
+0x6F2 cell sweeps will slow down first. For the full signal set, use the
+WiCAN or a SocketCAN adapter.
 
 ### `--bus vehicle` vs `--bus bms`
 
