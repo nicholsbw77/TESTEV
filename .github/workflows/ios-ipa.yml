@@ -1,0 +1,43 @@
+# Builds an UNSIGNED iOS .ipa on GitHub's macOS runners — no Mac needed.
+# Download the artifact and sideload it with Sideloadly or AltStore from any
+# Windows/Mac machine using a personal (free) Apple ID; those tools re-sign
+# the app during install. See the PR/README notes for the sideload steps.
+name: iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/lucid-bell-b66b0n, main]
+    paths:
+      - lib/**
+      - ios/**
+      - plugins/**
+      - pubspec.yaml
+      - .github/workflows/ios-ipa.yml
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qry TESTEV-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TESTEV-unsigned-ipa
+          path: TESTEV-unsigned.ipa
+          retention-days: 14
