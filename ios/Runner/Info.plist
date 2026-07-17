@@ -47,6 +47,15 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<!-- Candidate OBDLink (OBD Solutions) protocol strings. OBD Solutions
+		     doesn't publish theirs; if the session fails, the app shows the
+		     strings the MX+ actually advertises — add the right one here and
+		     rebuild. See ios/README_MFI.md. -->
+		<string>com.obdlink.readwrite</string>
+		<string>com.scantool.readwrite</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>TESTEV needs Bluetooth to connect to OBDLink MX+ for vehicle diagnostics</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>

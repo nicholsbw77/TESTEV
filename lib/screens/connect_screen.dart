@@ -130,38 +130,23 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 // ── OBDLink MX+ (Bluetooth) ──────────────────────
                 _sectionTitle('OBDLink MX+ (Bluetooth)'),
                 const SizedBox(height: 12),
-                if (Platform.isAndroid) ...[
-                  _connectButton(
-                    'Connect via Bluetooth',
-                    const Color(0xFF2196F3),
-                    _connecting
-                        ? null
-                        : () => _connectBluetooth(model),
+                _connectButton(
+                  'Connect via Bluetooth',
+                  const Color(0xFF2196F3),
+                  _connecting ? null : () => _connectBluetooth(model),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  Platform.isIOS
+                      ? 'Uses Apple MFi (ExternalAccessory) — pair the MX+ '
+                          'in Settings → Bluetooth first'
+                      : 'Auto-scans for paired OBDLink/ELM327 devices',
+                  style: const TextStyle(
+                    color: Color(0xFF78909C),
+                    fontSize: 11,
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Auto-scans for paired OBDLink/ELM327 devices',
-                    style: TextStyle(
-                      color: Color(0xFF78909C),
-                      fontSize: 11,
-                    ),
-                  ),
-                ] else ...[
-                  _connectButton(
-                    'Bluetooth — Android Only',
-                    const Color(0xFF546E7A),
-                    null,
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Bluetooth SPP not available on iOS\nUse WiFi (MeatPi WiCAN) above',
-                    style: TextStyle(
-                      color: Color(0xFF546E7A),
-                      fontSize: 11,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+                  textAlign: TextAlign.center,
+                ),
               ],
             ),
           ),

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -6,6 +8,8 @@ import 'can/pack_state.dart';
 import 'can/adapter_base.dart';
 import 'can/slcan_adapter.dart';
 import 'can/elm327_adapter.dart';
+import 'can/elm327_base.dart';
+import 'can/elm327_ea_adapter.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/connect_screen.dart';
 
@@ -67,14 +71,23 @@ class AppModel extends ChangeNotifier {
 
   Future<void> connectElm327({String? address, String? name}) async {
     await _disconnect();
-    final adapter = Elm327Adapter(
-      deviceAddress: address,
-      deviceName: name,
-      onStatus: (msg) {
-        statusMessage = msg;
-        notifyListeners();
-      },
-    );
+    // iOS talks to the MFi-certified MX+ via ExternalAccessory;
+    // Android uses classic Bluetooth SPP.
+    final Elm327Base adapter = Platform.isIOS
+        ? Elm327EaAdapter(
+            onStatus: (msg) {
+              statusMessage = msg;
+              notifyListeners();
+            },
+          )
+        : Elm327Adapter(
+            deviceAddress: address,
+            deviceName: name,
+            onStatus: (msg) {
+              statusMessage = msg;
+              notifyListeners();
+            },
+          );
     _adapter = adapter;
     state.adapterType = 'OBDLink MX+';
     state.vehicleBus = true;
