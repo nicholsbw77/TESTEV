@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as dev;
 import 'dart:typed_data';
 
 import 'package:ea_accessory/ea_accessory.dart';
@@ -26,14 +27,24 @@ class Elm327EaAdapter extends Elm327Base {
   Future<void> openTransport() async {
     onStatus?.call('Looking for MFi accessories...');
     final accessories = await EaAccessory.listAccessories();
+    final declared = await EaAccessory.declaredProtocols();
+
+    // DEBUG-CAPTURE: dump everything iOS surfaced so we can pick the right
+    // UISupportedExternalAccessoryProtocols string. Remove after fix.
+    dev.log('declared protocols: $declared', name: 'EACAP');
+    dev.log('accessory count: ${accessories.length}', name: 'EACAP');
+    for (final a in accessories) {
+      dev.log('name="${a.name}" mfr="${a.manufacturer}" '
+          'model="${a.modelNumber}" protocols=${a.protocols}',
+          name: 'EACAP');
+    }
+
     if (accessories.isEmpty) {
       throw Exception(
           'No MFi accessory connected.\n'
           'Pair the OBDLink MX+ in Settings → Bluetooth (hold its button '
           'until it blinks), then try again.');
     }
-
-    final declared = await EaAccessory.declaredProtocols();
 
     // Prefer accessories that look like an OBDLink, then any accessory
     // advertising a protocol we declared in Info.plist.

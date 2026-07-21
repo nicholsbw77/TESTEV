@@ -238,6 +238,9 @@ class DashboardScreen extends StatelessWidget {
           Expanded(child: _metricTile('kWh Total',
               state.kwhTotal > 0 ? state.kwhTotal.toStringAsFixed(1) : '—',
               const Color(0xFFFFEB3B))),
+          Expanded(child: _metricTile('Current kWh',
+              state.bestCurrentKwh.isNaN ? '—' : state.bestCurrentKwh.toStringAsFixed(1),
+              const Color(0xFF00E5FF))),
         ],
       ),
     );
@@ -264,6 +267,9 @@ class DashboardScreen extends StatelessWidget {
           _metricTile('kWh Total',
               state.kwhTotal > 0 ? state.kwhTotal.toStringAsFixed(1) : '—',
               const Color(0xFFFFEB3B)),
+          _metricTile('Current kWh',
+              state.bestCurrentKwh.isNaN ? '—' : state.bestCurrentKwh.toStringAsFixed(1),
+              const Color(0xFF00E5FF)),
         ],
       ),
     );

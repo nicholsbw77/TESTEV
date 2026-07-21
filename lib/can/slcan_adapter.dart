@@ -1,8 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'can_frame.dart';
 import 'adapter_base.dart';
+
+/// DEBUG-CAPTURE: raw-frame logging for MeatPi decode diagnosis.
+/// IDs we're trying to pin down (SOC/WOT/limits). Remove after fix.
+const Set<int> _kCaptureIds = {0x302, 0x332, 0x382, 0x392, 0x7E2, 0x202, 0x232};
 
 /// SLCAN over WiFi TCP — for MeatPi WiCAN.
 ///
@@ -81,6 +86,15 @@ class SlcanAdapter extends CanAdapter {
       if (line.isNotEmpty) {
         final frame = _parseLine(line);
         if (frame != null) {
+          // DEBUG-CAPTURE: emit candump-style ID#hexdata for target IDs.
+          if (_kCaptureIds.contains(frame.id)) {
+            final hex = frame.data
+                .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                .join()
+                .toUpperCase();
+            dev.log('${frame.id.toRadixString(16).toUpperCase().padLeft(3, '0')}#$hex',
+                name: 'MEATPICAP');
+          }
           countFrame();
           onFrame(frame);
         }

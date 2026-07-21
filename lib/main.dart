@@ -1,3 +1,4 @@
+import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -64,6 +65,7 @@ class AppModel extends ChangeNotifier {
       });
     } catch (e) {
       statusMessage = 'Error: $e';
+      dev.log('connect error: $e', name: 'TESTEV'); // DEBUG-CAPTURE
       state.connected = false;
       notifyListeners();
     }
@@ -108,6 +110,7 @@ class AppModel extends ChangeNotifier {
       });
     } catch (e) {
       statusMessage = 'Error: $e';
+      dev.log('connect error: $e', name: 'TESTEV'); // DEBUG-CAPTURE
       state.connected = false;
       notifyListeners();
     }

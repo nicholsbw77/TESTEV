@@ -28,6 +28,14 @@ class PackState {
   double kwhCharged = double.nan;
   double kwhDischarged = double.nan;
 
+  // Energy currently stored in the pack (kWh) — from 0x382 nominal energy
+  // remaining on the BMS internal bus. Falls back to SOC×capacity estimate.
+  double currentKwh = double.nan;
+
+  // Nominal usable pack capacity (kWh) for the SOC-based fallback estimate.
+  // Classic Model S 85 pack ≈ 77 kWh usable; refine once 0x382 is decoded.
+  double nominalPackKwh = 77.0;
+
   // Identity
   String serialNumber = '';
   double odometerKm = double.nan;
@@ -64,6 +72,14 @@ class PackState {
     if (packVoltage > 50) return packVoltage;
     if (validCount >= 20) return cellAvg * 96;
     return fromCells;
+  }
+
+  /// Energy currently in the pack (kWh). Prefer the directly-decoded 0x382
+  /// value; fall back to SOC × nominal usable capacity when unavailable.
+  double get bestCurrentKwh {
+    if (!currentKwh.isNaN && currentKwh > 0) return currentKwh;
+    if (!soc.isNaN) return soc / 100.0 * nominalPackKwh;
+    return double.nan;
   }
 
   /// Total kWh throughput (charged + discharged)
@@ -260,31 +276,27 @@ class PackState {
   void feed302(List<int> data) {
     if (data.length < 8) return;
 
-    // SoC/SoE only reliable on BMS internal bus — on vehicle bus 0x302 may
-    // originate from a different ECU or be multiplexed with a mux byte at [0]
     if (!vehicleBus) {
-      final rawSoc = (data[0] << 8) | data[1];
-      final rawSoe = (data[2] << 8) | data[3];
+      // BMS internal bus: upper 6 bits of byte 0 are flags, SOC is 10-bit
+      // value in lower 2 bits of byte 0 + all of byte 1, scale 0.1%/bit.
+      final rawSoc = ((data[0] & 0x03) << 8) | data[1];
       if (rawSoc > 0) {
-        final candidate = rawSoc * 0.01;
+        final candidate = rawSoc * 0.1;
         if (candidate <= 100.0) soc = candidate;
       }
-      if (rawSoe > 0) {
-        final candidate = rawSoe * 0.01;
-        if (candidate <= 100.0) socSoe = candidate;
-      }
-    }
 
-    // kWh counter: bytes 4-6, 3 bytes big-endian, 10 Wh/LSB
-    final kwhRaw = (data[4] << 16) | (data[5] << 8) | data[6];
-    if (kwhRaw > 0) {
-      final candidate = kwhRaw * 0.01;
-      if (candidate < 500000) {
-        if (kwhCharged.isNaN) {
-          kwhCharged = candidate;
-        } else if (candidate >= kwhCharged && (candidate - kwhCharged) < 500) {
-          kwhCharged = candidate;
-        }
+      // kWh discharged: bytes [2:3] BE, 0.01 kWh/bit
+      final rawOut = (data[2] << 8) | data[3];
+      if (rawOut > 0) {
+        final candidate = rawOut * 0.01;
+        if (candidate < 500000) kwhDischarged = candidate;
+      }
+
+      // kWh charged: bytes [4:5] BE, 0.01 kWh/bit
+      final rawIn = (data[4] << 8) | data[5];
+      if (rawIn > 0) {
+        final candidate = rawIn * 0.01;
+        if (candidate < 500000) kwhCharged = candidate;
       }
     }
   }
@@ -340,6 +352,24 @@ class PackState {
         }
         break;
     }
+  }
+
+  /// 0x382 — BMS energy status (classic Model S BMS internal bus).
+  /// Three 10-bit LE (Intel byte-order) fields at bit offsets 0, 10, 20,
+  /// each scaled 0.1 kWh/bit. Matches community DBC and Python reference.
+  void feed382(List<int> data) {
+    if (data.length < 8) return;
+    final raw = _le64(data);
+    final nomRemaining = ((raw >> 10) & 0x3FF) * 0.1;
+    if (nomRemaining > 0 && nomRemaining < 120) currentKwh = nomRemaining;
+  }
+
+  static int _le64(List<int> d) {
+    int v = 0;
+    for (int i = 7; i >= 0; i--) {
+      v = (v << 8) | (i < d.length ? d[i] : 0);
+    }
+    return v;
   }
 
   void feed542(List<int> data) {

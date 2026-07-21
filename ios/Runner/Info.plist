@@ -63,6 +63,10 @@
 	<array>
 		<string>com.obdlink.readwrite</string>
 		<string>com.scantool.readwrite</string>
+		<string>com.obdsol.obdlink.mxp</string>
+		<string>com.obdsol.mxplus</string>
+		<string>com.obdsol.readwrite</string>
+		<string>com.obdlink.mxplus</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
