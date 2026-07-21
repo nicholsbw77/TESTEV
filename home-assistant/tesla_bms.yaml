@@ -1,0 +1,250 @@
+# Tesla BMS MQTT Sensors for Home Assistant
+# ─────────────────────────────────────────
+# Place in: /config/packages/tesla_bms.yaml
+#
+# Requires packages enabled in configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Data source: MeatPi WiCAN (ecda3ba562bd) → Mosquitto MQTT broker
+# Topic: wican/ecda3ba562bd/can/rx
+# Byte order: Little-endian (Intel) — confirmed from live CAN capture
+#
+# CAN IDs decoded (BMS bus via OBD port):
+#   0x302 (770)  → SOC  (LE 10-bit at bits 0-9, scale 0.1)
+#   0x102 (258)  → Pack voltage (LE 16-bit bytes 0-1, scale 0.01)
+#                  Pack current  (LE 16-bit bytes 2-3 signed, scale 0.1)
+#   0x382 (898)  → kWh nominal remaining (LE bits 10-19, scale 0.1)
+#   0x6F2 (1778) → Cell voltages (muxed, needs calibration)
+
+template:
+  - trigger:
+      - platform: mqtt
+        topic: "wican/ecda3ba562bd/can/rx"
+    sensor:
+      # ── SOC ────────────────────────────────────────
+      # CAN 0x302: LE 10-bit = data[0] | (data[1] & 0x03) << 8, scale 0.1
+      - name: "Tesla BMS SOC"
+        unique_id: tesla_bms_soc
+        device_class: battery
+        state_class: measurement
+        unit_of_measurement: "%"
+        icon: mdi:car-battery
+        state: >
+          {% set ns = namespace(val=this.state|default('unknown',true)) %}
+          {% for f in trigger.payload_json.get('frame', []) %}
+            {% if f.id == 770 %}
+              {% set raw = f.data[0] + (f.data[1]|bitwise_and(3)) * 256 %}
+              {% if raw > 0 %}
+                {% set candidate = (raw * 0.1)|round(1) %}
+                {% if candidate <= 100 %}
+                  {% set ns.val = candidate %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.val }}
+
+      # ── Pack Voltage ───────────────────────────────
+      # CAN 0x102: LE 16-bit = data[0] | data[1] << 8, scale 0.01
+      - name: "Tesla BMS Pack Voltage"
+        unique_id: tesla_bms_pack_voltage
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: "V"
+        icon: mdi:flash-triangle
+        state: >
+          {% set ns = namespace(val=this.state|default('unknown',true)) %}
+          {% for f in trigger.payload_json.get('frame', []) %}
+            {% if f.id == 258 %}
+              {% set raw = f.data[0] + f.data[1] * 256 %}
+              {% if raw > 0 %}
+                {% set ns.val = (raw * 0.01)|round(2) %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.val }}
+
+      # ── Pack Current ───────────────────────────────
+      # CAN 0x102: LE 16-bit signed = data[2] | data[3] << 8, scale 0.1
+      - name: "Tesla BMS Pack Current"
+        unique_id: tesla_bms_pack_current
+        device_class: current
+        state_class: measurement
+        unit_of_measurement: "A"
+        icon: mdi:current-dc
+        state: >
+          {% set ns = namespace(val=this.state|default('unknown',true)) %}
+          {% for f in trigger.payload_json.get('frame', []) %}
+            {% if f.id == 258 %}
+              {% set raw = f.data[2] + f.data[3] * 256 %}
+              {% if raw > 32767 %}{% set raw = raw - 65536 %}{% endif %}
+              {% set ns.val = (raw * 0.1)|round(1) %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.val }}
+
+      # ── Pack Power (computed) ──────────────────────
+      - name: "Tesla BMS Pack Power"
+        unique_id: tesla_bms_pack_power
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: "kW"
+        icon: mdi:lightning-bolt
+        state: >
+          {% set v = states('sensor.tesla_bms_pack_voltage')|float(0) %}
+          {% set i = states('sensor.tesla_bms_pack_current')|float(0) %}
+          {% if v > 0 %}
+            {{ ((v * i) / 1000)|round(2) }}
+          {% else %}
+            {{ this.state|default('unknown',true) }}
+          {% endif %}
+
+      # ── kWh Remaining ──────────────────────────────
+      # CAN 0x382: LE bits 10-19 (10-bit), scale 0.1
+      - name: "Tesla BMS kWh Remaining"
+        unique_id: tesla_bms_kwh_remaining
+        state_class: measurement
+        unit_of_measurement: "kWh"
+        icon: mdi:battery-charging-100
+        state: >
+          {% set ns = namespace(val=this.state|default('unknown',true)) %}
+          {% for f in trigger.payload_json.get('frame', []) %}
+            {% if f.id == 898 %}
+              {% set raw16 = f.data[1] + f.data[2] * 256 %}
+              {% set nom = (raw16 / 4)|int|bitwise_and(1023) %}
+              {% set candidate = (nom * 0.1)|round(1) %}
+              {% if candidate > 0 and candidate < 120 %}
+                {% set ns.val = candidate %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.val }}
+
+      # ── Nominal Full Energy (bits 0-9) ─────────────
+      # CAN 0x382: LE bits 0-9 (10-bit), scale 0.1
+      - name: "Tesla BMS Nominal Full kWh"
+        unique_id: tesla_bms_nominal_full_kwh
+        state_class: measurement
+        unit_of_measurement: "kWh"
+        icon: mdi:battery-high
+        state: >
+          {% set ns = namespace(val=this.state|default('unknown',true)) %}
+          {% for f in trigger.payload_json.get('frame', []) %}
+            {% if f.id == 898 %}
+              {% set raw = f.data[0] + (f.data[1]|bitwise_and(3)) * 256 %}
+              {% set candidate = (raw * 0.1)|round(1) %}
+              {% if candidate > 0 and candidate < 120 %}
+                {% set ns.val = candidate %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.val }}
+
+      # ── Cell Voltage Delta ─────────────────────────
+      # CAN 0x6F2: muxed cell voltages, tracks all 96 cells
+      # NOTE: Cell decode needs calibration — values may be off
+      # until we verify the exact byte layout on this bus
+      - name: "Tesla BMS Cell Delta"
+        unique_id: tesla_bms_cell_delta
+        state_class: measurement
+        unit_of_measurement: "mV"
+        icon: mdi:chart-bar
+        state: >
+          {% set cells_json = this.attributes.get('cells', '{}') %}
+          {% set cells = cells_json|from_json if cells_json != '{}' else {} %}
+          {% set has_update = trigger.payload_json.get('frame',[])|selectattr('id','eq',1778)|list|length > 0 %}
+          {% if has_update %}
+            {% set ns = namespace(parts=[]) %}
+            {% for i in range(96) %}
+              {% set key = i|string %}
+              {% set ns_v = namespace(v=cells.get(key)) %}
+              {% for f in trigger.payload_json.frame %}
+                {% if f.id == 1778 and f.data[0] < 32 and f.data[0] == (i // 3) %}
+                  {% set pos = i % 3 %}
+                  {% set raw = f.data[1 + pos*2] * 256 + f.data[2 + pos*2] %}
+                  {% if raw > 0 and raw < 60000 %}
+                    {% set ns_v.v = (raw * 0.0001)|round(4) %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {% if ns_v.v is not none and ns_v.v is number %}
+                {% set ns.parts = ns.parts + [ns_v.v] %}
+              {% endif %}
+            {% endfor %}
+            {% if ns.parts|length > 0 %}
+              {{ ((ns.parts|max - ns.parts|min) * 1000)|round(0) }}
+            {% else %}
+              {{ this.state|default(0) }}
+            {% endif %}
+          {% else %}
+            {{ this.state|default(0) }}
+          {% endif %}
+        attributes:
+          cells: >
+            {% set cells_json = this.attributes.get('cells', '{}') %}
+            {% set cells = cells_json|from_json if cells_json != '{}' else {} %}
+            {% set has_update = trigger.payload_json.get('frame',[])|selectattr('id','eq',1778)|list|length > 0 %}
+            {% if has_update %}
+              {% set ns = namespace(parts=[]) %}
+              {% for i in range(96) %}
+                {% set key = i|string %}
+                {% set ns_v = namespace(v=cells.get(key)) %}
+                {% for f in trigger.payload_json.frame %}
+                  {% if f.id == 1778 and f.data[0] < 32 and f.data[0] == (i // 3) %}
+                    {% set pos = i % 3 %}
+                    {% set raw = f.data[1 + pos*2] * 256 + f.data[2 + pos*2] %}
+                    {% if raw > 0 and raw < 60000 %}
+                      {% set ns_v.v = (raw * 0.0001)|round(4) %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% if ns_v.v is not none and ns_v.v is number %}
+                  {% set ns.parts = ns.parts + ['"' ~ i|string ~ '":' ~ ns_v.v|string] %}
+                {% endif %}
+              {% endfor %}
+              {{ '{' ~ ns.parts|join(',') ~ '}' }}
+            {% else %}
+              {{ cells_json }}
+            {% endif %}
+          cell_min: >
+            {% set cells_json = this.attributes.get('cells', '{}') %}
+            {% set cells = cells_json|from_json if cells_json != '{}' else {} %}
+            {% set vals = cells.values()|list %}
+            {{ (vals|min|round(4)) if vals|length > 0 else 0 }}
+          cell_max: >
+            {% set cells_json = this.attributes.get('cells', '{}') %}
+            {% set cells = cells_json|from_json if cells_json != '{}' else {} %}
+            {% set vals = cells.values()|list %}
+            {{ (vals|max|round(4)) if vals|length > 0 else 0 }}
+          cell_count: >
+            {% set cells_json = this.attributes.get('cells', '{}') %}
+            {% set cells = cells_json|from_json if cells_json != '{}' else {} %}
+            {{ cells|length }}
+
+  # ── Derived sensors from cell attributes ─────────
+  - sensor:
+      - name: "Tesla BMS Cell Min"
+        unique_id: tesla_bms_cell_min
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: "V"
+        icon: mdi:arrow-down-bold
+        state: >
+          {{ state_attr('sensor.tesla_bms_cell_delta', 'cell_min')|default(0) }}
+
+      - name: "Tesla BMS Cell Max"
+        unique_id: tesla_bms_cell_max
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: "V"
+        icon: mdi:arrow-up-bold
+        state: >
+          {{ state_attr('sensor.tesla_bms_cell_delta', 'cell_max')|default(0) }}
+
+      - name: "Tesla BMS Cell Count"
+        unique_id: tesla_bms_cell_count
+        state_class: measurement
+        icon: mdi:counter
+        state: >
+          {{ state_attr('sensor.tesla_bms_cell_delta', 'cell_count')|default(0) }}

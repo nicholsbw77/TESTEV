@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart';
 
 class ConnectScreen extends StatefulWidget {
@@ -16,11 +17,44 @@ class _ConnectScreenState extends State<ConnectScreen> {
   final _portController = TextEditingController(text: '3333');
   bool _connecting = false;
   bool _permissionsGranted = false;
+  List<String> _connectionHistory = [];
+
+  static const _kHistoryKey = 'wican_connection_history';
+  static const _kLastHostKey = 'wican_last_host';
+  static const _kLastPortKey = 'wican_last_port';
 
   @override
   void initState() {
     super.initState();
     _requestPermissions();
+    _loadConnectionHistory();
+  }
+
+  Future<void> _loadConnectionHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList(_kHistoryKey) ?? [];
+    final lastHost = prefs.getString(_kLastHostKey);
+    final lastPort = prefs.getString(_kLastPortKey);
+    if (mounted) {
+      setState(() {
+        _connectionHistory = history;
+        if (lastHost != null) _hostController.text = lastHost;
+        if (lastPort != null) _portController.text = lastPort;
+      });
+    }
+  }
+
+  Future<void> _saveConnection(String host, int port) async {
+    final prefs = await SharedPreferences.getInstance();
+    final entry = '$host:$port';
+    final history = prefs.getStringList(_kHistoryKey) ?? [];
+    history.remove(entry);
+    history.insert(0, entry);
+    if (history.length > 10) history.removeRange(10, history.length);
+    await prefs.setStringList(_kHistoryKey, history);
+    await prefs.setString(_kLastHostKey, host);
+    await prefs.setString(_kLastPortKey, port.toString());
+    if (mounted) setState(() => _connectionHistory = history);
   }
 
   Future<void> _requestPermissions() async {
@@ -101,6 +135,44 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 // ── MeatPi WiCAN (WiFi) ──────────────────────────
                 _sectionTitle('MeatPi WiCAN (WiFi)'),
                 const SizedBox(height: 8),
+                if (_connectionHistory.isNotEmpty) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF16213E),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF1E3A5F)),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        hint: const Text('Previous connections',
+                            style: TextStyle(color: Color(0xFF546E7A), fontSize: 14)),
+                        dropdownColor: const Color(0xFF16213E),
+                        items: _connectionHistory.map((entry) {
+                          return DropdownMenuItem(
+                            value: entry,
+                            child: Text(entry,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontFamily: 'RobotoMono',
+                                    fontSize: 14)),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val == null) return;
+                          final parts = val.split(':');
+                          setState(() {
+                            _hostController.text = parts[0];
+                            if (parts.length > 1) _portController.text = parts[1];
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 Row(
                   children: [
                     Expanded(
@@ -255,6 +327,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
     setState(() => _connecting = true);
     final host = _hostController.text.trim();
     final port = int.tryParse(_portController.text.trim()) ?? 3333;
+    await _saveConnection(host, port);
     await model.connectSlcan(host, port);
     if (mounted) setState(() => _connecting = false);
   }

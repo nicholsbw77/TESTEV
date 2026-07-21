@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../main.dart';
@@ -72,12 +71,10 @@ class DashboardScreen extends StatelessWidget {
   Widget _portraitLayout(PackState state) {
     return Column(
       children: [
-        // Delta + metrics
         _deltaCard(state),
         _metricsRow(state),
-        _kwhRow(state),
+        _statsRow(state),
         const SizedBox(height: 4),
-        // Cell grid fills remaining space
         Expanded(child: _cellGrid(state)),
       ],
     );
@@ -207,40 +204,58 @@ class DashboardScreen extends StatelessWidget {
         children: [
           Expanded(child: _metricTile('SoC',
               state.soc.isNaN ? '—' : '${state.soc.toStringAsFixed(1)}%',
-              state.soc > 20 ? const Color(0xFF00E676) : const Color(0xFFFF1744))),
+              state.soc.isNaN || state.soc > 20
+                  ? const Color(0xFF00E676)
+                  : const Color(0xFFFF1744))),
           Expanded(child: _metricTile('Pack V',
               voltage > 0 ? '${voltage.toStringAsFixed(1)}V' : '—',
               const Color(0xFFE0E0E0))),
-          Expanded(child: _metricTile('Max kW',
-              state.maxDischargeKw.isNaN ? '—' : '${state.maxDischargeKw.toStringAsFixed(0)}',
-              state.maxDischargeKw > 200
-                  ? const Color(0xFF00E676)
-                  : const Color(0xFFFF1744))),
-          Expanded(child: _metricTile('WOT A',
-              state.wotCurrentLimit.isNaN ? '—' : '${state.wotCurrentLimit.toStringAsFixed(0)}',
-              const Color(0xFFE0E0E0))),
+          Expanded(child: _metricTile('Current',
+              state.packCurrent.isNaN ? '—' : '${state.packCurrent.toStringAsFixed(1)}A',
+              state.packCurrent.isNaN
+                  ? const Color(0xFFE0E0E0)
+                  : state.packCurrent < -1
+                      ? const Color(0xFF00E5FF)
+                      : state.packCurrent > 1
+                          ? const Color(0xFFFF1744)
+                          : const Color(0xFFE0E0E0))),
+          Expanded(child: _metricTile('State',
+              state.packActivity,
+              state.packActivity == 'Charging'
+                  ? const Color(0xFF00E5FF)
+                  : state.packActivity == 'Driving'
+                      ? const Color(0xFFFF1744)
+                      : const Color(0xFF78909C))),
         ],
       ),
     );
   }
 
-  Widget _kwhRow(PackState state) {
+  Widget _statsRow(PackState state) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
         children: [
+          Expanded(child: _metricTile('Max kW',
+              state.maxDischargeKw.isNaN ? '—' : '${state.maxDischargeKw.toStringAsFixed(0)}',
+              state.maxDischargeKw.isNaN || state.maxDischargeKw > 200
+                  ? const Color(0xFF00E676)
+                  : const Color(0xFFFF1744))),
+          Expanded(child: _metricTile('WOT A',
+              state.wotCurrentLimit.isNaN ? '—' : '${state.wotCurrentLimit.toStringAsFixed(0)}',
+              const Color(0xFFE0E0E0))),
+          Expanded(child: _metricTile('Iso MΩ',
+              state.isolationMohm.isNaN ? '—' : '${state.isolationMohm.toStringAsFixed(1)}',
+              state.isolationMohm.isNaN
+                  ? const Color(0xFFE0E0E0)
+                  : state.isolationMohm > 1.0
+                      ? const Color(0xFF00E676)
+                      : state.isolationMohm > 0.5
+                          ? const Color(0xFFFFEB3B)
+                          : const Color(0xFFFF1744))),
           Expanded(child: _metricTile('kWh Charged',
               state.kwhCharged.isNaN ? '—' : state.kwhCharged.toStringAsFixed(1),
               const Color(0xFF00E676))),
-          Expanded(child: _metricTile('kWh Discharged',
-              state.kwhDischarged.isNaN ? '—' : state.kwhDischarged.toStringAsFixed(1),
-              const Color(0xFF90CAF9))),
-          Expanded(child: _metricTile('kWh Total',
-              state.kwhTotal > 0 ? state.kwhTotal.toStringAsFixed(1) : '—',
-              const Color(0xFFFFEB3B))),
-          Expanded(child: _metricTile('Current kWh',
-              state.bestCurrentKwh.isNaN ? '—' : state.bestCurrentKwh.toStringAsFixed(1),
-              const Color(0xFF00E5FF))),
         ],
       ),
     );
@@ -258,18 +273,23 @@ class DashboardScreen extends StatelessWidget {
           _metricTile('Pack V',
               voltage > 0 ? '${voltage.toStringAsFixed(1)}V' : '—',
               const Color(0xFFE0E0E0)),
+          _metricTile('Current',
+              state.packCurrent.isNaN ? '—' : '${state.packCurrent.toStringAsFixed(1)}A',
+              const Color(0xFFE0E0E0)),
+          _metricTile('State',
+              state.packActivity,
+              state.packActivity == 'Charging'
+                  ? const Color(0xFF00E5FF)
+                  : const Color(0xFF78909C)),
           _metricTile('Max kW',
               state.maxDischargeKw.isNaN ? '—' : '${state.maxDischargeKw.toStringAsFixed(0)}',
               const Color(0xFF00E676)),
+          _metricTile('WOT A',
+              state.wotCurrentLimit.isNaN ? '—' : '${state.wotCurrentLimit.toStringAsFixed(0)}',
+              const Color(0xFFE0E0E0)),
           _metricTile('kWh Charged',
               state.kwhCharged.isNaN ? '—' : state.kwhCharged.toStringAsFixed(1),
               const Color(0xFF00E676)),
-          _metricTile('kWh Total',
-              state.kwhTotal > 0 ? state.kwhTotal.toStringAsFixed(1) : '—',
-              const Color(0xFFFFEB3B)),
-          _metricTile('Current kWh',
-              state.bestCurrentKwh.isNaN ? '—' : state.bestCurrentKwh.toStringAsFixed(1),
-              const Color(0xFF00E5FF)),
         ],
       ),
     );

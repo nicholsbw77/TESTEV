@@ -1,0 +1,134 @@
+# Tesla BMS Dashboard for Home Assistant
+# ──────────────────────────────────────
+# Add as a new dashboard view in Lovelace:
+#   1. Go to your HA dashboard
+#   2. Click pencil icon (edit) → three dots → Raw configuration editor
+#   3. Add this as a new view under "views:"
+#
+# Or create a new dashboard:
+#   Settings → Dashboards → Add Dashboard → paste this under "views:"
+
+title: Tesla BMS
+icon: mdi:car-electric
+path: tesla-bms
+type: panel
+cards:
+  - type: vertical-stack
+    cards:
+      # ── Header ──────────────────────────────
+      - type: markdown
+        content: |
+          # TESLA BMS
+          Model 3 · 77 kWh Pack
+        style: |
+          ha-card {
+            background: transparent;
+            box-shadow: none;
+            padding: 8px 16px 0;
+          }
+
+      # ── Top Row: SOC + Power + kWh ──────────
+      - type: horizontal-stack
+        cards:
+          - type: gauge
+            entity: sensor.tesla_bms_soc
+            name: SOC
+            min: 0
+            max: 100
+            severity:
+              green: 40
+              yellow: 20
+              red: 0
+            needle: true
+
+          - type: gauge
+            entity: sensor.tesla_bms_kwh_remaining
+            name: kWh Remaining
+            min: 0
+            max: 80
+            severity:
+              green: 30
+              yellow: 15
+              red: 0
+            needle: true
+
+          - type: gauge
+            entity: sensor.tesla_bms_pack_power
+            name: Pack Power
+            min: -100
+            max: 100
+            needle: true
+
+      # ── Pack Stats Row ──────────────────────
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: sensor.tesla_bms_pack_voltage
+            name: Pack Voltage
+            icon: mdi:flash-triangle
+
+          - type: entity
+            entity: sensor.tesla_bms_pack_current
+            name: Pack Current
+            icon: mdi:current-dc
+
+          - type: entity
+            entity: sensor.tesla_bms_pack_power
+            name: Pack Power
+            icon: mdi:lightning-bolt
+
+          - type: entity
+            entity: sensor.tesla_bms_kwh_remaining
+            name: kWh Remaining
+            icon: mdi:battery-charging-100
+
+      # ── Cell Voltage Section ────────────────
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: sensor.tesla_bms_cell_min
+            name: Cell Min
+            icon: mdi:arrow-down-bold
+
+          - type: entity
+            entity: sensor.tesla_bms_cell_max
+            name: Cell Max
+            icon: mdi:arrow-up-bold
+
+          - type: entity
+            entity: sensor.tesla_bms_cell_delta
+            name: Cell Delta
+            icon: mdi:delta
+
+          - type: entity
+            entity: sensor.tesla_bms_cell_count
+            name: Cells
+            icon: mdi:counter
+
+      # ── History Graphs ──────────────────────
+      - type: history-graph
+        title: SOC History
+        hours_to_show: 24
+        entities:
+          - entity: sensor.tesla_bms_soc
+            name: SOC
+
+      - type: history-graph
+        title: Pack Voltage & Current
+        hours_to_show: 24
+        entities:
+          - entity: sensor.tesla_bms_pack_voltage
+            name: Voltage
+          - entity: sensor.tesla_bms_pack_current
+            name: Current
+
+      - type: history-graph
+        title: Cell Voltage Spread
+        hours_to_show: 24
+        entities:
+          - entity: sensor.tesla_bms_cell_min
+            name: Min
+          - entity: sensor.tesla_bms_cell_max
+            name: Max
+          - entity: sensor.tesla_bms_cell_delta
+            name: Delta (mV)

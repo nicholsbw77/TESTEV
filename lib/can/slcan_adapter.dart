@@ -7,7 +7,7 @@ import 'adapter_base.dart';
 
 /// DEBUG-CAPTURE: raw-frame logging for MeatPi decode diagnosis.
 /// IDs we're trying to pin down (SOC/WOT/limits). Remove after fix.
-const Set<int> _kCaptureIds = {0x302, 0x332, 0x382, 0x392, 0x7E2, 0x202, 0x232};
+const Set<int> _kCaptureIds = {0x302, 0x332, 0x392, 0x3D2, 0x7E2, 0x202, 0x232};
 
 /// SLCAN over WiFi TCP — for MeatPi WiCAN.
 ///
