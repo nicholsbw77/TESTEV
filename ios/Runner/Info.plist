@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Testev</string>
+	<string>TESTEV 2</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -61,12 +61,7 @@
 	<string>Main</string>
 	<key>UISupportedExternalAccessoryProtocols</key>
 	<array>
-		<string>com.obdlink.readwrite</string>
-		<string>com.scantool.readwrite</string>
-		<string>com.obdsol.obdlink.mxp</string>
-		<string>com.obdsol.mxplus</string>
-		<string>com.obdsol.readwrite</string>
-		<string>com.obdlink.mxplus</string>
+		<string>com.obdlink</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
