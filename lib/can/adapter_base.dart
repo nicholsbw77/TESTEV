@@ -4,7 +4,8 @@ import 'pack_state.dart';
 /// Adapter types supported by TESTEV
 enum AdapterType {
   slcanWifi('MeatPi WiCAN (WiFi)', 'WiFi TCP → SLCAN'),
-  elm327Bluetooth('OBDLink MX+ (Bluetooth)', 'Bluetooth SPP → ELM327');
+  elm327Bluetooth('OBDLink MX+ (Bluetooth)', 'Bluetooth SPP → ELM327'),
+  elm327WiFi('WiCAN (ELM emulator, WiFi)', 'WiFi TCP → ELM327');
 
   final String displayName;
   final String description;

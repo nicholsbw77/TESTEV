@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../main.dart';
 import '../can/pack_state.dart';
+import 'bms_clear_screen.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
@@ -50,7 +51,15 @@ class DashboardScreen extends StatelessWidget {
                 fontSize: 11,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'BMS clear (advanced)',
+              icon: const Icon(Icons.build, size: 20),
+              color: const Color(0xFFFFEB3B),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const BmsClearScreen()),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.close, size: 20),
               color: const Color(0xFF78909C),
