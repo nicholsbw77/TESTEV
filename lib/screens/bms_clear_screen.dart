@@ -141,6 +141,13 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     final res = await openSecurityAccessSession(uds);
     _currentReqCanId = kBmsRequestCanId;
     _appendLog('security-access result: ${res.label}');
+    if (res == SecurityResult.success) {
+      // Tesla BMS drops the extended session after ~5 s of silence. Start
+      // 3E 80 (TesterPresent, suppress response) at 4.5 s so pauses
+      // between routine taps don't invalidate the unlock.
+      uds.startKeepAlive();
+      _appendLog('  → TesterPresent keepalive started (4.5s)');
+    }
     setState(() {
       _sessionOpen = res == SecurityResult.success;
       _status = res.label;
@@ -149,6 +156,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
 
   Future<void> _teardown() async {
     try {
+      _uds?.stopKeepAlive();
       await _uds?.close();
     } catch (_) {}
     _uds = null;

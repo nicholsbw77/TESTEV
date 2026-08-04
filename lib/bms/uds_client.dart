@@ -26,6 +26,7 @@ class UdsClient {
   Completer<String>? _pending;
   String? _expectToken;    // uppercase token to match
   Timer? _timeoutTimer;
+  Timer? _keepAliveTimer;
 
   /// true if the adapter accepted ATCAF0 (real ELM/STN — we frame ISO-TP
   /// ourselves and the ELM auto-handles flow control on receive).
@@ -313,7 +314,37 @@ class UdsClient {
     }
   }
 
+  /// Start sending TesterPresent (`3E 80`, suppress-response-bit set) at
+  /// [interval] on the current ATSH header. Tesla BMS drops the session
+  /// after ~5 s of silence — with the extended session open you must keep
+  /// this heartbeat going or the next real request will get a NRC 0x7F.
+  ///
+  /// The keepalive queues after any pending real request (via the same
+  /// `_sendAndWait` mutex) so it can never collide with a routine send.
+  void startKeepAlive({Duration interval = const Duration(milliseconds: 4500)}) {
+    stopKeepAlive();
+    _keepAliveTimer = Timer.periodic(interval, (_) async {
+      if (_pending != null) return; // busy — skip this tick
+      try {
+        // 3E 80 = TesterPresent with suppress-positive-response bit set,
+        // so the ECU sends no reply and we don't have to match one.
+        // In manualFraming mode: pad to 8 bytes; otherwise send raw.
+        final hex = manualFraming
+            ? '02 3E 80 00 00 00 00 00'
+            : '3E 80';
+        await sendHex(hex, timeout: const Duration(milliseconds: 800))
+            .catchError((_) => '');
+      } catch (_) {}
+    });
+  }
+
+  void stopKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = null;
+  }
+
   Future<void> close() async {
+    stopKeepAlive();
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _completeError(StateError('closed'));

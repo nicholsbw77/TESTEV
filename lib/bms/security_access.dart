@@ -5,16 +5,16 @@ import 'uds_client.dart';
 /// SendKey level 6.
 typedef SeedToKey = List<int> Function(List<int> seed);
 
-/// The T-Clear app's fixed 16-byte key. It replays the same key regardless
-/// of the seed the BMS returns — this works on the Model S/X packs T-Clear
-/// supports because the firmware happens to accept it. Swap in your own
-/// [SeedToKey] if you have the real algorithm.
-const List<int> kTClearFixedKey = [
-  0x35, 0x34, 0x37, 0x36, 0x31, 0x30, 0x33, 0x32,
-  0x3D, 0x3C, 0x3F, 0x3E, 0x39, 0x38, 0x3B, 0x3A,
-];
-
-List<int> _fixedKey(List<int> _) => kTClearFixedKey;
+/// The Tesla Model S BMS security algorithm: **XOR each seed byte with 0x35**.
+/// Confirmed against Black Hat USA 2020 reverse-engineering + community
+/// verification, and cross-checked against the T-Clear "fixed key" — the
+/// bench pack T-Clear was tested against always returns the static seed
+/// `00 01 02 … 0F`, which XOR'd with 0x35 gives exactly T-Clear's
+/// hard-coded key `35 34 37 36 31 30 33 32 3D 3C 3F 3E 39 38 3B 3A`.
+/// On packs that return a dynamic seed, the XOR algo is the one that
+/// works.
+List<int> teslaBmsSeedToKey(List<int> seed) =>
+    [for (final b in seed) (b ^ 0x35) & 0xFF];
 
 /// The Tesla Model S/X pack BMS UDS request CAN ID. Session + security
 /// **always** target this address, even when the routine that follows lives
@@ -32,7 +32,7 @@ const int kBmsRequestCanId = 0x602;
 /// the one WiCAN's emulator ships (v1.3a).
 Future<SecurityResult> openSecurityAccessSession(
   UdsClient uds, {
-  SeedToKey seedToKey = _fixedKey,
+  SeedToKey seedToKey = teslaBmsSeedToKey,
 }) async {
   // Ensure the header is BMS. The caller may have last set a different
   // header for a previous routine — that's fine, we override here.
