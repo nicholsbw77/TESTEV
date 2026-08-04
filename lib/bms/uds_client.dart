@@ -77,12 +77,16 @@ class UdsClient {
   /// Configure the request header and ISO-TP flow-control for a given
   /// request/response CAN ID pair. Call this whenever the routine's CAN ID
   /// changes (e.g. between 0x602 and 0x601 routines).
+  ///
+  /// Flow-control mode is set to 0 (fully automatic) so the ELM picks the
+  /// correct FC header and data itself (`30 00 00` by default, matching
+  /// what the reference Python `_send_flow_control()` sends). Manual FC
+  /// via `ATFCSM 1` / `2` proved flaky on multi-frame RX for non-OBD UDS
+  /// services on this OBDLink firmware.
   Future<void> setSession({required int reqCanId}) async {
     final hex = _canIdHex(reqCanId);
     await _at('ATSH $hex');       // request header
-    await _at('ATFCSH $hex');     // flow-control sends use same header
-    await _at('ATFCSD 30 00 00'); // FC data: CTS, block=0, ST=0
-    await _at('ATFCSM 1');        // FC mode 1: user-defined FC
+    await _at('ATFCSM 0');        // FC mode 0: fully automatic
   }
 
   /// Send an ELM/AT command; wait for the `>` prompt.
@@ -139,11 +143,23 @@ class UdsClient {
     Duration timeout = const Duration(seconds: 3),
   }) async {
     try {
-      final reply = await sendUdsSingleFrame(
-        udsBytes, expect: expect, timeout: timeout);
-      final up = reply.toUpperCase();
-      if (RegExp(r'\b7F\s').hasMatch(up)) return false;
-      return up.contains(expect.toUpperCase());
+      var reply = await sendUdsSingleFrame(
+          udsBytes, expect: expect, timeout: timeout);
+      if (_extractNrc(reply) == 0x78) {
+        _log('  ↻ NRC 0x78 (response pending) — waiting P2* (5s)…');
+        try {
+          final more = await _waitFor(expect: expect,
+              timeout: const Duration(seconds: 5));
+          reply = reply + more;
+        } catch (_) {}
+      }
+      final nrc = _extractNrc(reply);
+      if (nrc != null && nrc != 0x78) {
+        _log('  ✗ Negative response NRC 0x${nrc.toRadixString(16).toUpperCase().padLeft(2, '0')}'
+            ' (${_nrcDescription(nrc)})');
+        return false;
+      }
+      return reply.toUpperCase().contains(expect.toUpperCase());
     } on TimeoutException {
       return false;
     } catch (_) {
@@ -161,14 +177,26 @@ class UdsClient {
     List<int> udsBytes,
     String expect, {
     Duration timeout = const Duration(seconds: 4),
-    Duration interFrameDelay = const Duration(milliseconds: 250),
+    Duration interFrameDelay = const Duration(milliseconds: 500),
   }) async {
     try {
       if (!manualFraming) {
-        final reply = await sendUds(udsBytes, expect: expect, timeout: timeout);
-        final up = reply.toUpperCase();
-        if (RegExp(r'\b7F\s').hasMatch(up)) return false;
-        return up.contains(expect.toUpperCase());
+        var reply = await sendUds(udsBytes, expect: expect, timeout: timeout);
+        if (_extractNrc(reply) == 0x78) {
+          _log('  ↻ NRC 0x78 (response pending) — waiting P2* (5s)…');
+          try {
+            final more = await _waitFor(expect: expect,
+                timeout: const Duration(seconds: 5));
+            reply = reply + more;
+          } catch (_) {}
+        }
+        final nrc = _extractNrc(reply);
+        if (nrc != null && nrc != 0x78) {
+          _log('  ✗ Negative response NRC 0x${nrc.toRadixString(16).toUpperCase().padLeft(2, '0')}'
+              ' (${_nrcDescription(nrc)})');
+          return false;
+        }
+        return reply.toUpperCase().contains(expect.toUpperCase());
       }
       // Manual framing.
       // First Frame: 10 <lenLow>  <first 6 bytes of UDS>
@@ -199,10 +227,22 @@ class UdsClient {
         sn++;
         final isLast = idx >= total;
         if (isLast) {
-          final reply = await sendHex(_hex(cf), expect: expect, timeout: timeout);
-          final up = reply.toUpperCase();
-          if (RegExp(r'\b7F\s').hasMatch(up)) return false;
-          return up.contains(expect.toUpperCase());
+          var reply = await sendHex(_hex(cf), expect: expect, timeout: timeout);
+          if (_extractNrc(reply) == 0x78) {
+            _log('  ↻ NRC 0x78 (response pending) — waiting P2* (5s)…');
+            try {
+              final more = await _waitFor(expect: expect,
+                  timeout: const Duration(seconds: 5));
+              reply = reply + more;
+            } catch (_) {}
+          }
+          final nrc = _extractNrc(reply);
+          if (nrc != null && nrc != 0x78) {
+            _log('  ✗ Negative response NRC 0x${nrc.toRadixString(16).toUpperCase().padLeft(2, '0')}'
+                ' (${_nrcDescription(nrc)})');
+            return false;
+          }
+          return reply.toUpperCase().contains(expect.toUpperCase());
         }
         await sendHex(_hex(cf), timeout: const Duration(seconds: 1))
             .catchError((_) => '');
@@ -218,22 +258,99 @@ class UdsClient {
       .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
       .join(' ');
 
+  /// Wait for additional data on the input stream (no send). Used to
+  /// extend the P2 window after a 0x78 "response pending" NRC.
+  Future<String> _waitFor({String? expect, required Duration timeout}) async {
+    if (_pending != null) {
+      throw StateError('UdsClient is busy');
+    }
+    _buffer = '';
+    _expectToken = expect?.toUpperCase();
+    _pending = Completer<String>();
+    _timeoutTimer = Timer(timeout, () {
+      if (!(_pending?.isCompleted ?? true)) {
+        _pending!.completeError(
+            TimeoutException('waitFor "$expect" expired', timeout));
+      }
+    });
+    try {
+      final reply = await _pending!.future;
+      _logMultiline(reply);
+      return reply;
+    } finally {
+      _timeoutTimer?.cancel();
+      _timeoutTimer = null;
+      _pending = null;
+      _expectToken = null;
+    }
+  }
+
+  /// Extract the UDS negative-response NRC from an ELM reply, if present.
+  /// A negative response comes back as `7F <svc> <nrc>` (single-frame
+  /// service `7F`). With ATH1 the reply also has the CAN ID prefix.
+  int? _extractNrc(String reply) {
+    final up = reply.toUpperCase();
+    // Match "7F XX YY" as three hex bytes, service byte 7F followed by
+    // the echoed service id and the NRC. Anchor on a whitespace boundary
+    // so an incidental "7F" inside a data payload doesn't false-match.
+    final m = RegExp(r'(?:^|\s)7F\s+[0-9A-F]{2}\s+([0-9A-F]{2})\b').firstMatch(up);
+    if (m == null) return null;
+    return int.tryParse(m.group(1)!, radix: 16);
+  }
+
+  /// Terse human name for the standard UDS NRCs.
+  static String _nrcDescription(int nrc) {
+    return _nrcNames[nrc] ?? 'NRC 0x${nrc.toRadixString(16).toUpperCase()}';
+  }
+  static const _nrcNames = <int, String>{
+    0x10: 'general reject',
+    0x11: 'service not supported',
+    0x12: 'sub-function not supported',
+    0x13: 'incorrect message length',
+    0x21: 'busy — repeat request',
+    0x22: 'conditions not correct',
+    0x24: 'request sequence error',
+    0x25: 'no response from sub-net component',
+    0x31: 'request out of range',
+    0x33: 'security access denied',
+    0x35: 'invalid key',
+    0x36: 'exceeded attempts',
+    0x37: 'required time delay not expired',
+    0x7E: 'sub-function not supported in this session',
+    0x7F: 'service not supported in this session',
+  };
+
   /// Positive-response helper: sends [hex] and returns true iff the reply
   /// contains [expect] before the timeout, false on ELM prompt without a
   /// match, timeout, or a UDS negative response (`7F …`).
+  ///
+  /// Handles NRC 0x78 ("response pending") the way the reference Python
+  /// ISOTPChannel does: waits another 5 s for the real response before
+  /// giving up.
   Future<bool> sendExpect(
     String hex,
     String expect, {
     Duration timeout = const Duration(seconds: 3),
   }) async {
     try {
-      final reply = await sendHex(hex, expect: expect, timeout: timeout);
-      final up = reply.toUpperCase();
-      // Negative response service byte 0x7F followed by the requested
-      // service id echoes up as "7F XX YY" and means the ECU rejected the
-      // request — never confuse that with a positive match.
-      if (RegExp(r'\b7F\s').hasMatch(up)) return false;
-      return up.contains(expect.toUpperCase());
+      var reply = await sendHex(hex, expect: expect, timeout: timeout);
+      // Retry the wait once if the ECU says "response pending" (NRC 0x78).
+      // We stay on the same request — the ECU will produce a fresh reply.
+      if (_extractNrc(reply) == 0x78) {
+        _log('  ↻ NRC 0x78 (response pending) — waiting P2* (5s)…');
+        try {
+          final more = await _waitFor(expect: expect,
+              timeout: const Duration(seconds: 5));
+          reply = reply + more;
+        } catch (_) {}
+      }
+      final nrc = _extractNrc(reply);
+      if (nrc != null && nrc != 0x78) {
+        _log('  ✗ Negative response NRC 0x${nrc.toRadixString(16).toUpperCase().padLeft(2, '0')}'
+            ' (${_nrcDescription(nrc)})');
+        return false;
+      }
+      return reply.toUpperCase().contains(expect.toUpperCase());
     } on TimeoutException {
       return false;
     } catch (_) {
