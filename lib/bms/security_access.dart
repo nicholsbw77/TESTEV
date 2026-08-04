@@ -38,15 +38,18 @@ Future<SecurityResult> openSecurityAccessSession(
   // header for a previous routine — that's fine, we override here.
   await uds.setSession(reqCanId: kBmsRequestCanId);
 
-  // 1. Extended diagnostic session
-  final sess = await uds.sendUdsExpect([0x10, 0x03], '50 03');
+  // 1. Extended diagnostic session — a single-frame UDS request.
+  final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
   if (!sess) return SecurityResult.sessionFailed;
 
-  // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 <16-byte seed>.
-  //    With CAF-on the ELM aggregates the multi-frame response into one
-  //    logical line for us.
+  // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 <16-byte seed>
+  //    — a multi-frame ISO-TP response. With manual framing on, ATFCSM
+  //    tells the ELM to auto-emit a flow-control back to the ECU when it
+  //    sees the First Frame, and it hands us all three CAN lines. The
+  //    `67 05` token appears in the FF regardless.
   final seedReply = await uds
-      .sendUds([0x27, 0x05], expect: '67 05', timeout: const Duration(seconds: 3))
+      .sendUdsSingleFrame([0x27, 0x05],
+          expect: '67 05', timeout: const Duration(seconds: 3))
       .catchError((_) => '');
   if (seedReply.isEmpty) return SecurityResult.seedFailed;
 
@@ -58,10 +61,9 @@ Future<SecurityResult> openSecurityAccessSession(
   }
 
   // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key bytes).
-  //    With CAF-on the ELM handles ISO-TP fragmentation, the ECU's flow-
-  //    control response, and the wait for the ECU's positive/negative
-  //    response — we just give it the payload and match "67 06" back.
-  final ok = await uds.sendUdsExpect(
+  //    Multi-frame: manual FF + CFs when supported, ELM auto-fragment
+  //    otherwise. Expect `67 06` on the reply to the final CF.
+  final ok = await uds.sendUdsMultiFrameExpect(
     [0x27, 0x06, ...key],
     '67 06',
     timeout: const Duration(seconds: 4),

@@ -209,7 +209,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
         _currentReqCanId = r.reqCanId;
       }
       _appendLog('--- ${r.label} (${r.hexId}) ---');
-      final ok = await uds.sendUdsExpect(
+      final ok = await uds.sendUdsSingleFrameExpect(
         r.requestBytes,
         r.expectedResponseHex,
         timeout: const Duration(seconds: 3),
@@ -271,7 +271,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
           _currentReqCanId = r.reqCanId;
         }
         _appendLog('--- ${r.label} (${r.hexId}) ---');
-        final ok = await _uds!.sendUdsExpect(
+        final ok = await _uds!.sendUdsSingleFrameExpect(
           r.requestBytes,
           r.expectedResponseHex,
           timeout: const Duration(seconds: 3),

@@ -27,6 +27,13 @@ class UdsClient {
   String? _expectToken;    // uppercase token to match
   Timer? _timeoutTimer;
 
+  /// true if the adapter accepted ATCAF0 (real ELM/STN — we frame ISO-TP
+  /// ourselves and the ELM auto-handles flow control on receive).
+  /// false if it rejected ATCAF0 with '?' (WiCAN's v1.3a emulator — we
+  /// have to send just the UDS service bytes and let the ELM build the
+  /// ISO-TP for us, which unfortunately breaks manual multi-frame sends).
+  bool manualFraming = true;
+
   UdsClient(this.adapter, {this.onLog});
 
   bool get isOpen => _sub != null;
@@ -43,18 +50,27 @@ class UdsClient {
       _completeError(StateError('transport closed'));
     });
 
-    // ELM init. We stay in CAN auto-format mode (default) — the ELM builds
-    // the ISO-TP single/first/consecutive frames from the raw UDS bytes we
-    // give it, and reassembles multi-frame responses back to a flat payload.
-    // That works uniformly across the OBDLink STN and older ELM clones
-    // (including WiCAN's v1.3a emulator which rejects ATCAF0 / ATAL).
+    // ELM init. We try to enable "manual framing" mode (ATCAF0 + ATAL) —
+    // that's T-Clear's proven-working sequence and reliably lets us drive
+    // multi-frame SendKey ourselves. If the adapter rejects ATCAF0 with
+    // '?' (WiCAN's v1.3a emulator does), we fall back to CAF-on mode where
+    // the ELM builds ISO-TP for us — single-frame commands still work,
+    // multi-frame SendKey may not.
     await _at('ATZ',   timeoutMs: 2500);
     await _at('ATE0');
     await _at('ATL0');
     await _at('ATH1');   // headers on: response lines start "612 …"
     await _at('ATS1');   // spaces on for legibility
-    await _at('ATSP6');  // ISO 15765-4 CAN 11-bit @ 500 kbps
-    await _at('ATST FF');// max receive timeout (~1s) — Tesla BMS is unhurried
+    await _at('ATAL');   // allow long messages (needed for ISO-TP >7 bytes)
+    final cafReply = await _at('ATCAF0');
+    manualFraming = !cafReply.contains('?');
+    if (!manualFraming) {
+      _log('!! adapter rejected ATCAF0 — falling back to CAF-on (multi-frame '
+          'SendKey may not work on this adapter)');
+    }
+    await _at('ATSP6');    // ISO 15765-4 CAN 11-bit @ 500 kbps
+    await _at('ATST FF');  // max receive timeout (~1s)
+    await _at('ATAT1');    // adaptive timing on — give slow ECUs slack
   }
 
   /// Configure the request header and ISO-TP flow-control for a given
@@ -95,11 +111,111 @@ class UdsClient {
     String? expect,
     Duration timeout = const Duration(seconds: 3),
   }) {
-    final hex = udsBytes
-        .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
-        .join(' ');
+    final hex = _hex(udsBytes);
     return sendHex(hex, expect: expect, timeout: timeout);
   }
+
+  /// Send a single-frame UDS request (≤7 UDS bytes).
+  ///
+  /// In [manualFraming] mode we prepend the ISO-TP length byte and pad to
+  /// 8 bytes (T-Clear's exact wire form). Otherwise we send just the UDS
+  /// bytes and let the ELM build the frame.
+  Future<String> sendUdsSingleFrame(
+    List<int> udsBytes, {
+    String? expect,
+    Duration timeout = const Duration(seconds: 3),
+  }) {
+    assert(udsBytes.length <= 7, 'single frame carries at most 7 UDS bytes');
+    final hex = manualFraming
+        ? _hex([udsBytes.length, ...udsBytes, ...List.filled(7 - udsBytes.length, 0)])
+        : _hex(udsBytes);
+    return sendHex(hex, expect: expect, timeout: timeout);
+  }
+
+  Future<bool> sendUdsSingleFrameExpect(
+    List<int> udsBytes,
+    String expect, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    try {
+      final reply = await sendUdsSingleFrame(
+        udsBytes, expect: expect, timeout: timeout);
+      final up = reply.toUpperCase();
+      if (RegExp(r'\b7F\s').hasMatch(up)) return false;
+      return up.contains(expect.toUpperCase());
+    } on TimeoutException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Send a multi-frame UDS request (>7 UDS bytes). In [manualFraming]
+  /// mode we emit the ISO-TP First Frame and Consecutive Frames on the
+  /// wire ourselves (matching T-Clear's SendKey sequence), with small
+  /// sleeps between and the caller's [expect] token matched against the
+  /// reply to the FINAL frame. In CAF-on mode we hand the whole payload
+  /// to the ELM and hope it auto-fragments (some adapters won't).
+  Future<bool> sendUdsMultiFrameExpect(
+    List<int> udsBytes,
+    String expect, {
+    Duration timeout = const Duration(seconds: 4),
+    Duration interFrameDelay = const Duration(milliseconds: 250),
+  }) async {
+    try {
+      if (!manualFraming) {
+        final reply = await sendUds(udsBytes, expect: expect, timeout: timeout);
+        final up = reply.toUpperCase();
+        if (RegExp(r'\b7F\s').hasMatch(up)) return false;
+        return up.contains(expect.toUpperCase());
+      }
+      // Manual framing.
+      // First Frame: 10 <lenLow>  <first 6 bytes of UDS>
+      //   (length field is 12 bits: high nibble in low nibble of first byte)
+      final total = udsBytes.length;
+      if (total > 0xFFF) throw ArgumentError('payload too long for single ISO-TP');
+      final ff = <int>[
+        0x10 | ((total >> 8) & 0x0F),
+        total & 0xFF,
+        ...udsBytes.sublist(0, 6),
+      ];
+      // The ECU should reply with a Flow Control 30 XX YY — we don't need
+      // to parse it (ATFCSM lets the ELM auto-generate our FC on receive,
+      // but the ECU's FC to us is just informational). Give the ELM a
+      // moment to see it.
+      await sendHex(_hex(ff), timeout: const Duration(seconds: 1))
+          .catchError((_) => '');
+      await Future.delayed(interFrameDelay);
+      // Consecutive Frames: 21, 22, 23, ... (mod 16) with 7 UDS bytes each.
+      int idx = 6;
+      int sn = 1;
+      while (idx < total) {
+        final chunk = <int>[];
+        for (int k = 0; k < 7; k++) {
+          chunk.add(idx < total ? udsBytes[idx++] : 0);
+        }
+        final cf = [0x20 | (sn & 0x0F), ...chunk];
+        sn++;
+        final isLast = idx >= total;
+        if (isLast) {
+          final reply = await sendHex(_hex(cf), expect: expect, timeout: timeout);
+          final up = reply.toUpperCase();
+          if (RegExp(r'\b7F\s').hasMatch(up)) return false;
+          return up.contains(expect.toUpperCase());
+        }
+        await sendHex(_hex(cf), timeout: const Duration(seconds: 1))
+            .catchError((_) => '');
+        await Future.delayed(interFrameDelay);
+      }
+      return false; // shouldn't reach here
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  static String _hex(List<int> bytes) => bytes
+      .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
+      .join(' ');
 
   /// Positive-response helper: sends [hex] and returns true iff the reply
   /// contains [expect] before the timeout, false on ELM prompt without a
