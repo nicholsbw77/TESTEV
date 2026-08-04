@@ -16,28 +16,37 @@ const List<int> kTClearFixedKey = [
 
 List<int> _fixedKey(List<int> _) => kTClearFixedKey;
 
+/// The Tesla Model S/X pack BMS UDS request CAN ID. Session + security
+/// **always** target this address, even when the routine that follows lives
+/// on a different header (e.g. 0x601 for isolation clears). The T-Clear
+/// app does the same.
+const int kBmsRequestCanId = 0x602;
+
 /// Open the extended diagnostic session (0x10 0x03) and pass SecurityAccess
-/// levels 5/6. Returns true iff the BMS acknowledges SendKey.
+/// levels 5/6 against the BMS at [kBmsRequestCanId].
 ///
-/// The client's request header must already be set for the pack BMS
-/// (typically 0x602 → 0x612). Session preamble is unaware of the routine
-/// that will follow, so call [UdsClient.setSession] with `reqCanId: 0x602`
-/// before this function, then call `setSession` again if a subsequent
-/// routine uses a different header (e.g. 0x601 for isolation clears).
+/// Payloads are sent in **CAN auto-format (CAF-on)** style — just the raw
+/// UDS service bytes, no ISO-TP length prefix. The ELM327 assembles the
+/// ISO-TP frame(s) and re-flattens multi-frame responses for us. That
+/// works uniformly on the OBDLink STN and on older ELM327 firmwares like
+/// the one WiCAN's emulator ships (v1.3a).
 Future<SecurityResult> openSecurityAccessSession(
   UdsClient uds, {
   SeedToKey seedToKey = _fixedKey,
 }) async {
+  // Ensure the header is BMS. The caller may have last set a different
+  // header for a previous routine — that's fine, we override here.
+  await uds.setSession(reqCanId: kBmsRequestCanId);
+
   // 1. Extended diagnostic session
-  final sess = await uds.sendExpect('02 10 03', '50 03');
+  final sess = await uds.sendUdsExpect([0x10, 0x03], '50 03');
   if (!sess) return SecurityResult.sessionFailed;
 
-  // 2. RequestSeed (level 5) — reply is an ISO-TP first frame:
-  //      612 10 12 67 05 <seed[0..2]>
-  //      612 21 <seed[3..9]>
-  //      612 22 <seed[10..15]> 00 00
+  // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 <16-byte seed>.
+  //    With CAF-on the ELM aggregates the multi-frame response into one
+  //    logical line for us.
   final seedReply = await uds
-      .sendHex('02 27 05', expect: '67 05', timeout: const Duration(seconds: 3))
+      .sendUds([0x27, 0x05], expect: '67 05', timeout: const Duration(seconds: 3))
       .catchError((_) => '');
   if (seedReply.isEmpty) return SecurityResult.seedFailed;
 
@@ -48,40 +57,21 @@ Future<SecurityResult> openSecurityAccessSession(
     throw ArgumentError('seedToKey must return exactly 16 bytes, got ${key.length}');
   }
 
-  // 3. SendKey (level 6) — needs multi-frame ISO-TP: 12 header+data bytes
-  //    (0x27 0x06 + 16 key bytes = 18 bytes total = 0x12).
-  //      Send:  10 12 27 06 k0 k1 k2 k3          (First Frame)
-  //             21 k4 k5 k6 k7 k8 k9 k10          (Consecutive #1)
-  //             22 k11 k12 k13 k14 k15 00 00      (Consecutive #2, padded)
-  //      Expect: 612 02 67 06
-
-  final firstFrame = '10 12 27 06 '
-      '${_h(key[0])} ${_h(key[1])} ${_h(key[2])} ${_h(key[3])}';
-  final cf1 = '21 '
-      '${_h(key[4])} ${_h(key[5])} ${_h(key[6])} ${_h(key[7])} '
-      '${_h(key[8])} ${_h(key[9])} ${_h(key[10])}';
-  final cf2 = '22 '
-      '${_h(key[11])} ${_h(key[12])} ${_h(key[13])} ${_h(key[14])} '
-      '${_h(key[15])} 00 00';
-
-  // First frame — the BMS should reply with a flow-control 30 XX YY.
-  await uds
-      .sendHex(firstFrame, expect: '30 ', timeout: const Duration(seconds: 2))
-      .catchError((_) => '');
-  // Small breath between CFs (matches T-Clear's Thread.Sleep(500))
-  await Future.delayed(const Duration(milliseconds: 400));
-  await uds
-      .sendHex(cf1, timeout: const Duration(seconds: 1))
-      .catchError((_) => '');
-  await Future.delayed(const Duration(milliseconds: 400));
-  final ok = await uds.sendExpect(cf2, '67 06',
-      timeout: const Duration(seconds: 3));
+  // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key bytes).
+  //    With CAF-on the ELM handles ISO-TP fragmentation, the ECU's flow-
+  //    control response, and the wait for the ECU's positive/negative
+  //    response — we just give it the payload and match "67 06" back.
+  final ok = await uds.sendUdsExpect(
+    [0x27, 0x06, ...key],
+    '67 06',
+    timeout: const Duration(seconds: 4),
+  );
   return ok ? SecurityResult.success : SecurityResult.keyRejected;
 }
 
 enum SecurityResult {
   success,
-  sessionFailed,     // 0x10 0x03 not accepted
+  sessionFailed,     // 0x10 0x03 not accepted (or NO DATA — car off/asleep)
   seedFailed,        // 0x27 0x05 returned no/malformed seed
   keyRejected,       // 0x27 0x06 negative response (0x7F 0x27 …)
 }
@@ -89,7 +79,7 @@ enum SecurityResult {
 extension SecurityResultLabel on SecurityResult {
   String get label => switch (this) {
         SecurityResult.success        => 'Security-access OK',
-        SecurityResult.sessionFailed  => 'Session request rejected (0x10 0x03)',
+        SecurityResult.sessionFailed  => 'Session request rejected (0x10 0x03) — car on? contactors closed? adapter powered?',
         SecurityResult.seedFailed     => 'Seed request rejected (0x27 0x05)',
         SecurityResult.keyRejected    => 'Key rejected (0x27 0x06)',
       };
@@ -97,34 +87,47 @@ extension SecurityResultLabel on SecurityResult {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-String _h(int b) => b.toRadixString(16).toUpperCase().padLeft(2, '0');
-
-/// Parse the multi-line ELM reply to `02 27 05` into a 16-byte seed.
-/// Expected shape (spaces on, header on):
+/// Parse the ELM reply to `27 05` into a 16-byte seed.
+/// With CAF-on the ELM typically returns one line like:
+///     612 67 05 XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX
+/// but some firmwares still emit the raw ISO-TP frames:
 ///     612 10 12 67 05 XX XX XX
 ///     612 21 XX XX XX XX XX XX XX
 ///     612 22 XX XX XX XX XX 00 00
+/// The parser handles either shape.
 List<int> _extractSeed(String reply) {
-  final lines = reply
-      .split(RegExp(r'[\r\n]+'))
-      .map((l) => l.trim().toUpperCase())
-      .where((l) => l.isNotEmpty && l != '>')
-      .toList();
   final seed = <int>[];
-  for (final line in lines) {
-    final toks = line.split(RegExp(r'\s+'));
-    // Drop CAN ID (3 hex chars in first token)
+  for (final line in reply.split(RegExp(r'[\r\n]+'))) {
+    final t = line.trim().toUpperCase();
+    if (t.isEmpty || t == '>') continue;
+    final toks = t.split(RegExp(r'\s+'));
     if (toks.isEmpty) continue;
-    List<String> payload = toks.length > 1 ? toks.sublist(1) : [];
-    // First frame:  10 12 67 05 <s0 s1 s2>
-    if (payload.length >= 5 && payload[0] == '10') {
-      // skip length + service + subfn = 3 tokens after '10'
-      seed.addAll(payload.sublist(4).map(_hexByte).whereType<int>());
-    } else if (payload.isNotEmpty && payload[0].startsWith('2')) {
-      // Consecutive frame:  21/22 <bytes...>
-      seed.addAll(payload.sublist(1).map(_hexByte).whereType<int>());
+
+    // Drop the CAN ID if it looks like a 3-char hex header (ATH1 on).
+    List<String> payload = toks;
+    if (toks[0].length == 3 && int.tryParse(toks[0], radix: 16) != null) {
+      payload = toks.sublist(1);
     }
-    if (seed.length >= 16) break;
+    if (payload.isEmpty) continue;
+
+    // Case A: raw ISO-TP framing surfaces.
+    if (payload[0] == '10' && payload.length >= 5) {
+      // First frame: 10 <len> 67 05 <seed[0..2]>
+      seed.addAll(payload.sublist(4).map(_hexByte).whereType<int>());
+      continue;
+    }
+    if (RegExp(r'^2[0-9A-F]$').hasMatch(payload[0]) && payload.length >= 2) {
+      // Consecutive frame: 2N <seed bytes>
+      seed.addAll(payload.sublist(1).map(_hexByte).whereType<int>());
+      continue;
+    }
+    // Case B: ELM aggregated — payload starts with 67 05 <seed...>
+    final serviceIdx = payload.indexOf('67');
+    if (serviceIdx >= 0 && payload.length > serviceIdx + 2 &&
+        payload[serviceIdx + 1] == '05') {
+      seed.addAll(payload.sublist(serviceIdx + 2).map(_hexByte).whereType<int>());
+      continue;
+    }
   }
   // Trim any trailing padding bytes if we over-collected.
   return seed.length > 16 ? seed.sublist(0, 16) : seed;

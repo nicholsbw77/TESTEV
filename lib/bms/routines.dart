@@ -25,18 +25,23 @@ class Routine {
     this.faults = const [],
   });
 
-  /// ISO-TP single-frame bytes as sent on the bus (8 bytes, zero-padded).
-  List<int> get requestPayload {
+  /// UDS-service bytes (no ISO-TP length prefix, no padding) —
+  /// suitable for CAF-on ELM adapters. The ELM builds the ISO-TP frame.
+  ///     31 01 04 XX
+  List<int> get requestBytes {
     final hi = (routineId >> 8) & 0xFF;
     final lo = routineId & 0xFF;
-    return [0x04, 0x31, 0x01, hi, lo, 0x00, 0x00, 0x00];
+    return [0x31, 0x01, hi, lo];
   }
 
-  /// Positive-response ISO-TP single-frame bytes (first 5 significant bytes).
-  List<int> get expectedResponse {
+  /// Positive-response UDS bytes: `71 01 04 XX`. Substring-matches in
+  /// either CAF-on or CAF-off reply forms.
+  String get expectedResponseHex {
     final hi = (routineId >> 8) & 0xFF;
     final lo = routineId & 0xFF;
-    return [0x05, 0x71, 0x01, hi, lo];
+    return '71 01 '
+        '${hi.toRadixString(16).toUpperCase().padLeft(2, '0')} '
+        '${lo.toRadixString(16).toUpperCase().padLeft(2, '0')}';
   }
 
   String get hexId => '0x${routineId.toRadixString(16).toUpperCase().padLeft(4, '0')}';

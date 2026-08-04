@@ -43,15 +43,18 @@ class UdsClient {
       _completeError(StateError('transport closed'));
     });
 
-    // Standard ELM init for raw ISO-TP command traffic.
+    // ELM init. We stay in CAN auto-format mode (default) — the ELM builds
+    // the ISO-TP single/first/consecutive frames from the raw UDS bytes we
+    // give it, and reassembles multi-frame responses back to a flat payload.
+    // That works uniformly across the OBDLink STN and older ELM clones
+    // (including WiCAN's v1.3a emulator which rejects ATCAF0 / ATAL).
     await _at('ATZ',   timeoutMs: 2500);
     await _at('ATE0');
     await _at('ATL0');
-    await _at('ATH1');   // headers on so response lines are "612 …"
-    await _at('ATS1');   // spaces on for legibility + easy matching
-    await _at('ATAL');
-    await _at('ATCAF0'); // CAN auto-formatting off — we frame ISO-TP ourselves
+    await _at('ATH1');   // headers on: response lines start "612 …"
+    await _at('ATS1');   // spaces on for legibility
     await _at('ATSP6');  // ISO 15765-4 CAN 11-bit @ 500 kbps
+    await _at('ATST FF');// max receive timeout (~1s) — Tesla BMS is unhurried
   }
 
   /// Configure the request header and ISO-TP flow-control for a given
@@ -84,9 +87,23 @@ class UdsClient {
     return _sendAndWait(hex.toUpperCase(), expect: expect, timeout: timeout);
   }
 
+  /// Send a UDS payload as UDS-service-bytes only (no ISO-TP length prefix,
+  /// no padding). With CAF-on the ELM builds the frame; single/multi-frame
+  /// alike are handled by the adapter.
+  Future<String> sendUds(
+    List<int> udsBytes, {
+    String? expect,
+    Duration timeout = const Duration(seconds: 3),
+  }) {
+    final hex = udsBytes
+        .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
+        .join(' ');
+    return sendHex(hex, expect: expect, timeout: timeout);
+  }
+
   /// Positive-response helper: sends [hex] and returns true iff the reply
   /// contains [expect] before the timeout, false on ELM prompt without a
-  /// match or on timeout.
+  /// match, timeout, or a UDS negative response (`7F …`).
   Future<bool> sendExpect(
     String hex,
     String expect, {
@@ -94,12 +111,29 @@ class UdsClient {
   }) async {
     try {
       final reply = await sendHex(hex, expect: expect, timeout: timeout);
-      return reply.toUpperCase().contains(expect.toUpperCase());
+      final up = reply.toUpperCase();
+      // Negative response service byte 0x7F followed by the requested
+      // service id echoes up as "7F XX YY" and means the ECU rejected the
+      // request — never confuse that with a positive match.
+      if (RegExp(r'\b7F\s').hasMatch(up)) return false;
+      return up.contains(expect.toUpperCase());
     } on TimeoutException {
       return false;
     } catch (_) {
       return false;
     }
+  }
+
+  /// UDS-bytes variant of [sendExpect].
+  Future<bool> sendUdsExpect(
+    List<int> udsBytes,
+    String expect, {
+    Duration timeout = const Duration(seconds: 3),
+  }) {
+    final hex = udsBytes
+        .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
+        .join(' ');
+    return sendExpect(hex, expect, timeout: timeout);
   }
 
   Future<String> _sendAndWait(

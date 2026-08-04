@@ -130,13 +130,16 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     }
   }
 
-  Future<void> _openSession({required int reqCanId}) async {
+  /// Open the extended session + SecurityAccess against the BMS (always at
+  /// 0x602, matching T-Clear). Whichever CAN ID the caller intends to use
+  /// for the *routine* itself is set separately, right before the routine
+  /// fires — see [_runRoutine].
+  Future<void> _openSession() async {
     final uds = _uds;
     if (uds == null) return;
-    _appendLog('--- Opening extended session + SecurityAccess ---');
-    await uds.setSession(reqCanId: reqCanId);
-    _currentReqCanId = reqCanId;
+    _appendLog('--- Opening extended session + SecurityAccess (BMS 0x602) ---');
     final res = await openSecurityAccessSession(uds);
+    _currentReqCanId = kBmsRequestCanId;
     _appendLog('security-access result: ${res.label}');
     setState(() {
       _sessionOpen = res == SecurityResult.success;
@@ -191,21 +194,26 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
 
     setState(() => _busy = true);
     try {
-      // Open session if we haven't yet, OR if this routine uses a different
-      // request header than we last set (S/X isolation clears use 0x601).
-      if (!_sessionOpen || _currentReqCanId != r.reqCanId) {
-        await _openSession(reqCanId: r.reqCanId);
+      if (!_sessionOpen) {
+        await _openSession();
       }
       if (!_sessionOpen) {
         _snack('Security-access failed; routine not sent.');
         return;
       }
+      // Point ATSH at the routine's own request ID before sending. The
+      // security session on 0x602 stays valid — Tesla unlocks per-ECU and
+      // the unlock persists across header changes.
+      if (_currentReqCanId != r.reqCanId) {
+        await uds.setSession(reqCanId: r.reqCanId);
+        _currentReqCanId = r.reqCanId;
+      }
       _appendLog('--- ${r.label} (${r.hexId}) ---');
-      final hex = bytesToElmHex(r.requestPayload);
-      // Positive-response prefix, e.g. "05 71 01 04 0A"
-      final expect = bytesToElmHex(r.expectedResponse);
-      final ok = await uds.sendExpect(hex, expect,
-          timeout: const Duration(seconds: 3));
+      final ok = await uds.sendUdsExpect(
+        r.requestBytes,
+        r.expectedResponseHex,
+        timeout: const Duration(seconds: 3),
+      );
       setState(() {
         _status = ok
             ? '${r.label}: positive response'
@@ -252,18 +260,20 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     setState(() => _busy = true);
     _appendLog('=== Composite: $name ===');
     try {
+      if (!_sessionOpen) await _openSession();
+      if (!_sessionOpen) {
+        _appendLog('!! security-access failed; aborting composite');
+        return;
+      }
       for (final r in routines) {
-        if (!_sessionOpen || _currentReqCanId != r.reqCanId) {
-          await _openSession(reqCanId: r.reqCanId);
-        }
-        if (!_sessionOpen) {
-          _appendLog('!! security-access failed; aborting composite');
-          break;
+        if (_currentReqCanId != r.reqCanId) {
+          await _uds!.setSession(reqCanId: r.reqCanId);
+          _currentReqCanId = r.reqCanId;
         }
         _appendLog('--- ${r.label} (${r.hexId}) ---');
-        final ok = await _uds!.sendExpect(
-          bytesToElmHex(r.requestPayload),
-          bytesToElmHex(r.expectedResponse),
+        final ok = await _uds!.sendUdsExpect(
+          r.requestBytes,
+          r.expectedResponseHex,
           timeout: const Duration(seconds: 3),
         );
         _appendLog(ok ? '  -> positive response' : '  -> NO positive response');
