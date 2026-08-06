@@ -71,7 +71,12 @@ class UdsClient {
     }
     await _at('ATSP6');    // ISO 15765-4 CAN 11-bit @ 500 kbps
     await _at('ATST FF');  // max receive timeout (~1s)
-    await _at('ATAT1');    // adaptive timing on — give slow ECUs slack
+    // Adaptive timing OFF: the ELM shortens timeouts after successful
+    // replies, which can guillotine the wait between First Frame and
+    // the Consecutive Frames of the 18-byte RequestSeed reply and
+    // abort with "STOPPED". The reference Python isotp.py uses a
+    // fixed timeout too; match that behaviour.
+    await _at('ATAT0');
   }
 
   /// Configure the request header, the response-address filter, and the
@@ -91,17 +96,23 @@ class UdsClient {
   /// the ELM entirely — raw slcan / python-can sees every frame and
   /// filters in software. We can't; through the ELM, we must ask.
   ///
-  /// Flow-control mode is set to 0 (fully automatic) so the ELM picks
-  /// the correct FC header and data itself (`30 00 00` by default,
-  /// matching what the reference Python `_send_flow_control()` sends).
-  /// Manual FC via `ATFCSM 1` / `2` proved flaky on multi-frame RX for
-  /// non-OBD UDS services on this OBDLink firmware.
+  /// Flow-control is set explicitly (mode 1: user data + user header)
+  /// so the ELM sends `30 00 00` back to the ECU on our TX header the
+  /// moment it sees an incoming First Frame — matching exactly what
+  /// the reference Python `ISOTPChannel._send_flow_control()` does.
+  ///
+  /// Auto mode (`ATFCSM 0`) tripped the seed reply with `STOPPED` on
+  /// both a WiCAN v1.3a emulator and a real OBDLink STN — the ELM's
+  /// default FC guess for non-OBD services doesn't reliably match
+  /// what the BMS wants and reassembly aborts.
   Future<void> setSession({required int reqCanId, int? rspCanId}) async {
     final txHex = _canIdHex(reqCanId);
     final rxHex = _canIdHex(rspCanId ?? (reqCanId + 0x10));
-    await _at('ATSH $txHex');     // TX header
-    await _at('ATCRA $rxHex');    // filter incoming to just this response ID
-    await _at('ATFCSM 0');        // FC mode 0: fully automatic
+    await _at('ATSH $txHex');       // TX header
+    await _at('ATCRA $rxHex');      // filter incoming to just this response ID
+    await _at('ATFCSH $txHex');     // FC frames we send back to ECU use our TX header
+    await _at('ATFCSD 30 00 00');   // FC data: CTS, BS=0, STmin=0 (same as Python)
+    await _at('ATFCSM 1');          // FC mode 1: use ATFCSD + ATFCSH
   }
 
   /// Send an ELM/AT command; wait for the `>` prompt.
