@@ -20,7 +20,8 @@ List<int> teslaBmsSeedToKey(List<int> seed) =>
 /// **always** target this address, even when the routine that follows lives
 /// on a different header (e.g. 0x601 for isolation clears). The T-Clear
 /// app does the same.
-const int kBmsRequestCanId = 0x602;
+const int kBmsRequestCanId  = 0x602;
+const int kBmsResponseCanId = 0x612;
 
 /// Open the extended diagnostic session (0x10 0x03) and pass SecurityAccess
 /// levels 5/6 against the BMS at [kBmsRequestCanId].
@@ -36,7 +37,10 @@ Future<SecurityResult> openSecurityAccessSession(
 }) async {
   // Ensure the header is BMS. The caller may have last set a different
   // header for a previous routine — that's fine, we override here.
-  await uds.setSession(reqCanId: kBmsRequestCanId);
+  await uds.setSession(
+    reqCanId: kBmsRequestCanId,
+    rspCanId: kBmsResponseCanId,
+  );
 
   // 1. Extended diagnostic session — a single-frame UDS request.
   final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');

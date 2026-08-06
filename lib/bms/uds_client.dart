@@ -74,18 +74,33 @@ class UdsClient {
     await _at('ATAT1');    // adaptive timing on — give slow ECUs slack
   }
 
-  /// Configure the request header and ISO-TP flow-control for a given
-  /// request/response CAN ID pair. Call this whenever the routine's CAN ID
-  /// changes (e.g. between 0x602 and 0x601 routines).
+  /// Configure the request header, the response-address filter, and the
+  /// ISO-TP flow-control for a given request/response CAN ID pair. Call
+  /// this whenever the routine's CAN ID changes (e.g. between 0x602 and
+  /// 0x601 routines).
   ///
-  /// Flow-control mode is set to 0 (fully automatic) so the ELM picks the
-  /// correct FC header and data itself (`30 00 00` by default, matching
-  /// what the reference Python `_send_flow_control()` sends). Manual FC
-  /// via `ATFCSM 1` / `2` proved flaky on multi-frame RX for non-OBD UDS
-  /// services on this OBDLink firmware.
-  Future<void> setSession({required int reqCanId}) async {
-    final hex = _canIdHex(reqCanId);
-    await _at('ATSH $hex');       // request header
+  /// [rspCanId] defaults to `reqCanId + 0x10` — the Tesla convention on
+  /// the 2013-era BMS (0x602 → 0x612, 0x601 → 0x611). Pass it explicitly
+  /// for anything that doesn't follow that offset.
+  ///
+  /// **`ATCRA <rsp>` is critical**: without it, non-OBD-II responses
+  /// (like 0x612) are dropped by strict-filter ELM firmwares (WiCAN's
+  /// v1.3a emulator is one) and the request comes back as `NO DATA`
+  /// even though the ECU replied on the bus. The reference Python paths
+  /// (`wican_uds.py`, `can_reader/isotp.py`) sidestep this by bypassing
+  /// the ELM entirely — raw slcan / python-can sees every frame and
+  /// filters in software. We can't; through the ELM, we must ask.
+  ///
+  /// Flow-control mode is set to 0 (fully automatic) so the ELM picks
+  /// the correct FC header and data itself (`30 00 00` by default,
+  /// matching what the reference Python `_send_flow_control()` sends).
+  /// Manual FC via `ATFCSM 1` / `2` proved flaky on multi-frame RX for
+  /// non-OBD UDS services on this OBDLink firmware.
+  Future<void> setSession({required int reqCanId, int? rspCanId}) async {
+    final txHex = _canIdHex(reqCanId);
+    final rxHex = _canIdHex(rspCanId ?? (reqCanId + 0x10));
+    await _at('ATSH $txHex');     // TX header
+    await _at('ATCRA $rxHex');    // filter incoming to just this response ID
     await _at('ATFCSM 0');        // FC mode 0: fully automatic
   }
 

@@ -209,11 +209,12 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
         _snack('Security-access failed; routine not sent.');
         return;
       }
-      // Point ATSH at the routine's own request ID before sending. The
-      // security session on 0x602 stays valid — Tesla unlocks per-ECU and
-      // the unlock persists across header changes.
+      // Point ATSH / ATCRA at the routine's own request+response IDs
+      // before sending. The security session on 0x602 stays valid —
+      // Tesla unlocks per-ECU and the unlock persists across header
+      // changes.
       if (_currentReqCanId != r.reqCanId) {
-        await uds.setSession(reqCanId: r.reqCanId);
+        await uds.setSession(reqCanId: r.reqCanId, rspCanId: r.respCanId);
         _currentReqCanId = r.reqCanId;
       }
       _appendLog('--- ${r.label} (${r.hexId}) ---');
@@ -275,7 +276,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       }
       for (final r in routines) {
         if (_currentReqCanId != r.reqCanId) {
-          await _uds!.setSession(reqCanId: r.reqCanId);
+          await _uds!.setSession(reqCanId: r.reqCanId, rspCanId: r.respCanId);
           _currentReqCanId = r.reqCanId;
         }
         _appendLog('--- ${r.label} (${r.hexId}) ---');
