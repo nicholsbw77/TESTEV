@@ -41,19 +41,30 @@ Future<SecurityResult> openSecurityAccessSession(
     reqCanId: kBmsRequestCanId,
     rspCanId: kBmsResponseCanId,
   );
+  // Let the ELM's ATFCSH/D/M state settle before the first UDS request.
+  await Future.delayed(const Duration(milliseconds: 100));
 
   // 1. Extended diagnostic session — a single-frame UDS request.
   final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
   if (!sess) return SecurityResult.sessionFailed;
 
   // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 <16-byte seed>
-  //    — a multi-frame ISO-TP response. With manual framing on, ATFCSM
-  //    tells the ELM to auto-emit a flow-control back to the ECU when it
-  //    sees the First Frame, and it hands us all three CAN lines. The
-  //    `67 05` token appears in the FF regardless.
+  //    — a multi-frame ISO-TP response. ATFCSM 1 + ATFCSD 30 00 00 makes
+  //    the ELM auto-emit our flow control the moment the FF arrives on
+  //    0x612, and it hands us all three CAN lines. The `67 05` token
+  //    appears in the FF regardless.
+  //
+  //    Timing: give the BMS ~200 ms to finish transitioning into the
+  //    extended session before we hit it with 27 05 — the reference
+  //    Python `bms_uds_client.py` does the same (time.sleep(0.1) then
+  //    security_access) and skipping it caused STOPPED on the seed
+  //    reassembly on the STN-based OBDLink. Bump the seed's own timeout
+  //    to 5 s so the ELM has room to collect FF + 2 CFs before its own
+  //    ISO-TP state machine gives up.
+  await Future.delayed(const Duration(milliseconds: 200));
   final seedReply = await uds
       .sendUdsSingleFrame([0x27, 0x05],
-          expect: '67 05', timeout: const Duration(seconds: 3))
+          expect: '67 05', timeout: const Duration(seconds: 5))
       .catchError((_) => '');
   if (seedReply.isEmpty) return SecurityResult.seedFailed;
 
@@ -67,10 +78,11 @@ Future<SecurityResult> openSecurityAccessSession(
   // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key bytes).
   //    Multi-frame: manual FF + CFs when supported, ELM auto-fragment
   //    otherwise. Expect `67 06` on the reply to the final CF.
+  await Future.delayed(const Duration(milliseconds: 200));
   final ok = await uds.sendUdsMultiFrameExpect(
     [0x27, 0x06, ...key],
     '67 06',
-    timeout: const Duration(seconds: 4),
+    timeout: const Duration(seconds: 5),
   );
   return ok ? SecurityResult.success : SecurityResult.keyRejected;
 }
