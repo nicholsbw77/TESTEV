@@ -121,6 +121,28 @@ class UdsClient {
         expect: null, timeout: Duration(milliseconds: timeoutMs));
   }
 
+  /// Publicly-callable AT command sender for callers that need to
+  /// tweak the ELM state mid-session (e.g. toggle ATCAF between the
+  /// security-access round-trip and single-frame routine sends).
+  Future<String> at(String cmd, {int timeoutMs = 800}) =>
+      _at(cmd, timeoutMs: timeoutMs);
+
+  /// Switch CAN auto-formatting on/off at runtime. When [on] is true
+  /// the ELM builds ISO-TP TX for us and reassembles multi-frame RX
+  /// itself — which is a different code path in the STN chip from the
+  /// manual-framing path (ATCAF0), and empirically the only one that
+  /// completes multi-frame reception of Tesla BMS `27 05` seed replies
+  /// without aborting with STOPPED. When [on] is false we drive the
+  /// ISO-TP framing ourselves, which single-frame routine sends need.
+  ///
+  /// Updates [manualFraming] to reflect the new mode. If the adapter
+  /// rejects `ATCAF0` (WiCAN v1.3a emulator), manualFraming stays
+  /// false — we can't force manual mode on that firmware.
+  Future<void> setCanAutoFormat(bool on) async {
+    final reply = await _at(on ? 'ATCAF1' : 'ATCAF0');
+    manualFraming = on ? false : !reply.contains('?');
+  }
+
   /// Send a raw UDS hex payload (e.g. `'02 10 03'`). Returns the raw ELM
   /// response text (may contain multiple `\r`-delimited lines and the `>`).
   ///

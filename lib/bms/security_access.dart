@@ -41,50 +41,69 @@ Future<SecurityResult> openSecurityAccessSession(
     reqCanId: kBmsRequestCanId,
     rspCanId: kBmsResponseCanId,
   );
-  // Let the ELM's ATFCSH/D/M state settle before the first UDS request.
-  await Future.delayed(const Duration(milliseconds: 100));
 
-  // 1. Extended diagnostic session — a single-frame UDS request.
-  final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
-  if (!sess) return SecurityResult.sessionFailed;
+  // For the whole security-access exchange, force the ELM into CAN
+  // auto-formatting mode (ATCAF1). In CAF-off mode the STN aborts
+  // the 18-byte seed reassembly with STOPPED — its manual-framing
+  // path evidently can't complete FF + 2×CF for this non-OBD service
+  // (verified across three FC modes and with the timing pauses the
+  // reference Python uses). CAF-on hands the whole ISO-TP job to
+  // the ELM, which is a completely different code path in the STN
+  // and is the one the reference Python's udsoncan+can-isotp stack
+  // effectively drives. After security completes we restore CAF-off
+  // so the single-frame routine sends keep their T-Clear-style wire
+  // format (`0N XX XX XX 00 00 00 00`).
+  final restoreManual = uds.manualFraming;
+  await uds.setCanAutoFormat(true);
 
-  // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 <16-byte seed>
-  //    — a multi-frame ISO-TP response. ATFCSM 1 + ATFCSD 30 00 00 makes
-  //    the ELM auto-emit our flow control the moment the FF arrives on
-  //    0x612, and it hands us all three CAN lines. The `67 05` token
-  //    appears in the FF regardless.
-  //
-  //    Timing: give the BMS ~200 ms to finish transitioning into the
-  //    extended session before we hit it with 27 05 — the reference
-  //    Python `bms_uds_client.py` does the same (time.sleep(0.1) then
-  //    security_access) and skipping it caused STOPPED on the seed
-  //    reassembly on the STN-based OBDLink. Bump the seed's own timeout
-  //    to 5 s so the ELM has room to collect FF + 2 CFs before its own
-  //    ISO-TP state machine gives up.
-  await Future.delayed(const Duration(milliseconds: 200));
-  final seedReply = await uds
-      .sendUdsSingleFrame([0x27, 0x05],
-          expect: '67 05', timeout: const Duration(seconds: 5))
-      .catchError((_) => '');
-  if (seedReply.isEmpty) return SecurityResult.seedFailed;
+  try {
+    await Future.delayed(const Duration(milliseconds: 100));
 
-  final seed = _extractSeed(seedReply);
-  if (seed.length != 16) return SecurityResult.seedFailed;
-  final key = seedToKey(seed);
-  if (key.length != 16) {
-    throw ArgumentError('seedToKey must return exactly 16 bytes, got ${key.length}');
+    // 1. Extended diagnostic session — a single-frame UDS request.
+    final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
+    if (!sess) return SecurityResult.sessionFailed;
+
+    // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 + 16 seed
+    //    bytes. In CAF-on the ELM reassembles the whole thing and hands
+    //    us a single flat line: `612 67 05 XX … XX`.
+    //
+    //    Give the BMS ~200 ms to finish transitioning into the extended
+    //    session before we hit it with 27 05 (matches Python's
+    //    `time.sleep(0.1)` between session and security_access).
+    await Future.delayed(const Duration(milliseconds: 200));
+    final seedReply = await uds
+        .sendUdsSingleFrame([0x27, 0x05],
+            expect: '67 05', timeout: const Duration(seconds: 5))
+        .catchError((_) => '');
+    if (seedReply.isEmpty) return SecurityResult.seedFailed;
+
+    final seed = _extractSeed(seedReply);
+    if (seed.length != 16) return SecurityResult.seedFailed;
+    final key = seedToKey(seed);
+    if (key.length != 16) {
+      throw ArgumentError(
+          'seedToKey must return exactly 16 bytes, got ${key.length}');
+    }
+
+    // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key
+    //    bytes). CAF-on lets the ELM auto-fragment the request into
+    //    FF + CFs and reassemble the `67 06` positive reply.
+    await Future.delayed(const Duration(milliseconds: 200));
+    final ok = await uds.sendUdsMultiFrameExpect(
+      [0x27, 0x06, ...key],
+      '67 06',
+      timeout: const Duration(seconds: 5),
+    );
+    return ok ? SecurityResult.success : SecurityResult.keyRejected;
+  } finally {
+    // Restore manual framing so single-frame routine sends keep the
+    // T-Clear wire form. If the adapter refused ATCAF0 during init
+    // (WiCAN v1.3a), restoreManual is already false and the call
+    // just no-ops on the mode flag.
+    if (restoreManual) {
+      await uds.setCanAutoFormat(false);
+    }
   }
-
-  // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key bytes).
-  //    Multi-frame: manual FF + CFs when supported, ELM auto-fragment
-  //    otherwise. Expect `67 06` on the reply to the final CF.
-  await Future.delayed(const Duration(milliseconds: 200));
-  final ok = await uds.sendUdsMultiFrameExpect(
-    [0x27, 0x06, ...key],
-    '67 06',
-    timeout: const Duration(seconds: 5),
-  );
-  return ok ? SecurityResult.success : SecurityResult.keyRejected;
 }
 
 enum SecurityResult {
