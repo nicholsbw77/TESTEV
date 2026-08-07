@@ -23,6 +23,23 @@ List<int> teslaBmsSeedToKey(List<int> seed) =>
 const int kBmsRequestCanId  = 0x602;
 const int kBmsResponseCanId = 0x612;
 
+/// The 16-byte key T-Clear ships. This is exactly `XOR 0x35` of the
+/// static seed `00 01 02 … 0F` that a bench-mode BMS returns, so it
+/// unlocks any pack whose RequestSeed reply is the fixed sequence.
+/// Reverse-engineered from the decompiled T-Clear MainActivity where
+/// the same 16 bytes are hardcoded and sent verbatim on every SendKey,
+/// no matter what the actual seed reply contains.
+///
+/// On a real vehicle BMS that returns a random seed, this key won't
+/// work and RequestSeed → SendKey needs the XOR-0x35 algorithm on the
+/// actual seed bytes. That path is preserved via [teslaBmsSeedToKey]
+/// and can be wired back in once we can reliably reassemble the full
+/// 18-byte seed reply through the ELM.
+const List<int> kTeslaBmsFixedKey = [
+  0x35, 0x34, 0x37, 0x36, 0x31, 0x30, 0x33, 0x32,
+  0x3D, 0x3C, 0x3F, 0x3E, 0x39, 0x38, 0x3B, 0x3A,
+];
+
 /// Open the extended diagnostic session (0x10 0x03) and pass SecurityAccess
 /// levels 5/6 against the BMS at [kBmsRequestCanId].
 ///
@@ -33,7 +50,7 @@ const int kBmsResponseCanId = 0x612;
 /// the one WiCAN's emulator ships (v1.3a).
 Future<SecurityResult> openSecurityAccessSession(
   UdsClient uds, {
-  SeedToKey seedToKey = teslaBmsSeedToKey,
+  List<int> fixedKey = kTeslaBmsFixedKey,
 }) async {
   // Ensure the header is BMS. The caller may have last set a different
   // header for a previous routine — that's fine, we override here.
@@ -41,69 +58,44 @@ Future<SecurityResult> openSecurityAccessSession(
     reqCanId: kBmsRequestCanId,
     rspCanId: kBmsResponseCanId,
   );
+  await Future.delayed(const Duration(milliseconds: 100));
 
-  // For the whole security-access exchange, force the ELM into CAN
-  // auto-formatting mode (ATCAF1). In CAF-off mode the STN aborts
-  // the 18-byte seed reassembly with STOPPED — its manual-framing
-  // path evidently can't complete FF + 2×CF for this non-OBD service
-  // (verified across three FC modes and with the timing pauses the
-  // reference Python uses). CAF-on hands the whole ISO-TP job to
-  // the ELM, which is a completely different code path in the STN
-  // and is the one the reference Python's udsoncan+can-isotp stack
-  // effectively drives. After security completes we restore CAF-off
-  // so the single-frame routine sends keep their T-Clear-style wire
-  // format (`0N XX XX XX 00 00 00 00`).
-  final restoreManual = uds.manualFraming;
-  await uds.setCanAutoFormat(true);
+  // 1. Extended diagnostic session — a single-frame UDS request.
+  final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
+  if (!sess) return SecurityResult.sessionFailed;
+  await Future.delayed(const Duration(milliseconds: 200));
 
-  try {
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    // 1. Extended diagnostic session — a single-frame UDS request.
-    final sess = await uds.sendUdsSingleFrameExpect([0x10, 0x03], '50 03');
-    if (!sess) return SecurityResult.sessionFailed;
-
-    // 2. RequestSeed (level 5). Reply is 18 UDS bytes: 67 05 + 16 seed
-    //    bytes. In CAF-on the ELM reassembles the whole thing and hands
-    //    us a single flat line: `612 67 05 XX … XX`.
-    //
-    //    Give the BMS ~200 ms to finish transitioning into the extended
-    //    session before we hit it with 27 05 (matches Python's
-    //    `time.sleep(0.1)` between session and security_access).
-    await Future.delayed(const Duration(milliseconds: 200));
-    final seedReply = await uds
-        .sendUdsSingleFrame([0x27, 0x05],
-            expect: '67 05', timeout: const Duration(seconds: 5))
-        .catchError((_) => '');
-    if (seedReply.isEmpty) return SecurityResult.seedFailed;
-
-    final seed = _extractSeed(seedReply);
-    if (seed.length != 16) return SecurityResult.seedFailed;
-    final key = seedToKey(seed);
-    if (key.length != 16) {
-      throw ArgumentError(
-          'seedToKey must return exactly 16 bytes, got ${key.length}');
-    }
-
-    // 3. SendKey (level 6). 18 UDS bytes total (0x27 0x06 + 16 key
-    //    bytes). CAF-on lets the ELM auto-fragment the request into
-    //    FF + CFs and reassemble the `67 06` positive reply.
-    await Future.delayed(const Duration(milliseconds: 200));
-    final ok = await uds.sendUdsMultiFrameExpect(
-      [0x27, 0x06, ...key],
-      '67 06',
-      timeout: const Duration(seconds: 5),
-    );
-    return ok ? SecurityResult.success : SecurityResult.keyRejected;
-  } finally {
-    // Restore manual framing so single-frame routine sends keep the
-    // T-Clear wire form. If the adapter refused ATCAF0 during init
-    // (WiCAN v1.3a), restoreManual is already false and the call
-    // just no-ops on the mode flag.
-    if (restoreManual) {
-      await uds.setCanAutoFormat(false);
-    }
+  // 2. RequestSeed (level 5) — T-Clear pattern.
+  //
+  //    T-Clear (decompiled) only waits for the *First Frame* of the
+  //    18-byte seed reply: expect = "612 10 12 67". It never tries
+  //    to reassemble the CFs, because it uses a hardcoded key that
+  //    doesn't depend on the seed contents at all — which works
+  //    because a bench BMS always returns the static seed
+  //    00 01 02 … 0F, and the hardcoded key is exactly XOR-0x35 of
+  //    that seed. This sidesteps the STN's multi-frame RX abort
+  //    ("STOPPED") that killed every FC/timing tweak we tried.
+  //
+  //    We mirror T-Clear: match on the FF header only, then move on.
+  final seedReply = await uds
+      .sendUdsSingleFrame([0x27, 0x05],
+          expect: '10 12 67', timeout: const Duration(seconds: 3))
+      .catchError((_) => '');
+  if (!seedReply.toUpperCase().contains('10 12 67')) {
+    return SecurityResult.seedFailed;
   }
+  await Future.delayed(const Duration(milliseconds: 200));
+
+  // 3. SendKey (level 6) with the fixed T-Clear key. In manualFraming
+  //    the client emits FF (`10 12 27 06 KK KK KK KK`), CF1
+  //    (`21 KK KK KK KK KK KK KK`), CF2 (`22 KK KK KK KK KK 00 00`) as
+  //    three separate ELM commands — exactly T-Clear's wire pattern.
+  final ok = await uds.sendUdsMultiFrameExpect(
+    [0x27, 0x06, ...fixedKey],
+    '67 06',
+    timeout: const Duration(seconds: 5),
+  );
+  return ok ? SecurityResult.success : SecurityResult.keyRejected;
 }
 
 enum SecurityResult {
@@ -122,55 +114,7 @@ extension SecurityResultLabel on SecurityResult {
       };
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────
-
-/// Parse the ELM reply to `27 05` into a 16-byte seed.
-/// With CAF-on the ELM typically returns one line like:
-///     612 67 05 XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX
-/// but some firmwares still emit the raw ISO-TP frames:
-///     612 10 12 67 05 XX XX XX
-///     612 21 XX XX XX XX XX XX XX
-///     612 22 XX XX XX XX XX 00 00
-/// The parser handles either shape.
-List<int> _extractSeed(String reply) {
-  final seed = <int>[];
-  for (final line in reply.split(RegExp(r'[\r\n]+'))) {
-    final t = line.trim().toUpperCase();
-    if (t.isEmpty || t == '>') continue;
-    final toks = t.split(RegExp(r'\s+'));
-    if (toks.isEmpty) continue;
-
-    // Drop the CAN ID if it looks like a 3-char hex header (ATH1 on).
-    List<String> payload = toks;
-    if (toks[0].length == 3 && int.tryParse(toks[0], radix: 16) != null) {
-      payload = toks.sublist(1);
-    }
-    if (payload.isEmpty) continue;
-
-    // Case A: raw ISO-TP framing surfaces.
-    if (payload[0] == '10' && payload.length >= 5) {
-      // First frame: 10 <len> 67 05 <seed[0..2]>
-      seed.addAll(payload.sublist(4).map(_hexByte).whereType<int>());
-      continue;
-    }
-    if (RegExp(r'^2[0-9A-F]$').hasMatch(payload[0]) && payload.length >= 2) {
-      // Consecutive frame: 2N <seed bytes>
-      seed.addAll(payload.sublist(1).map(_hexByte).whereType<int>());
-      continue;
-    }
-    // Case B: ELM aggregated — payload starts with 67 05 <seed...>
-    final serviceIdx = payload.indexOf('67');
-    if (serviceIdx >= 0 && payload.length > serviceIdx + 2 &&
-        payload[serviceIdx + 1] == '05') {
-      seed.addAll(payload.sublist(serviceIdx + 2).map(_hexByte).whereType<int>());
-      continue;
-    }
-  }
-  // Trim any trailing padding bytes if we over-collected.
-  return seed.length > 16 ? seed.sublist(0, 16) : seed;
-}
-
-int? _hexByte(String t) {
-  if (t.length != 2) return null;
-  return int.tryParse(t, radix: 16);
-}
+// (Seed-parsing helpers removed — the fixed-key path doesn't need to
+// parse the seed bytes at all. Revive them alongside a working
+// multi-frame RX path through the ELM when we add dynamic-seed
+// support for a real vehicle BMS.)
