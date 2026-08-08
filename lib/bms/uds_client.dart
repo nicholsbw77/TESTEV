@@ -96,15 +96,19 @@ class UdsClient {
   /// the ELM entirely — raw slcan / python-can sees every frame and
   /// filters in software. We can't; through the ELM, we must ask.
   ///
-  /// Flow-control is set explicitly (mode 1: user data + user header)
-  /// so the ELM sends `30 00 00` back to the ECU on our TX header the
-  /// moment it sees an incoming First Frame — matching exactly what
-  /// the reference Python `ISOTPChannel._send_flow_control()` does.
+  /// Flow-control mode 2 (`user data + user header`) tells the ELM to
+  /// use both our `ATFCSD` (bytes to send) **and** our `ATFCSH` (CAN ID
+  /// the FC is transmitted on) when it auto-emits FC in response to an
+  /// incoming First Frame.
   ///
-  /// Auto mode (`ATFCSM 0`) tripped the seed reply with `STOPPED` on
-  /// both a WiCAN v1.3a emulator and a real OBDLink STN — the ELM's
-  /// default FC guess for non-OBD services doesn't reliably match
-  /// what the BMS wants and reassembly aborts.
+  /// Mode 1 (which we used before) is "user data + auto header" — the
+  /// ELM computes the FC header from `ATSH + 8` per the ELM327 datasheet.
+  /// For Tesla non-OBD IDs (ATSH 0x602) that gives 0x60A, not 0x602, so
+  /// the FC never reaches the BMS. The BMS stops sending CFs, the ELM
+  /// times out reading them, and returns `STOPPED` on the seed request —
+  /// the exact symptom we've been chasing. Mode 2 forces the FC onto
+  /// 0x602 (matching what the BMS actually listens on and what the
+  /// reference Python `ISOTPChannel._send_flow_control()` writes).
   Future<void> setSession({required int reqCanId, int? rspCanId}) async {
     final txHex = _canIdHex(reqCanId);
     final rxHex = _canIdHex(rspCanId ?? (reqCanId + 0x10));
@@ -112,7 +116,7 @@ class UdsClient {
     await _at('ATCRA $rxHex');      // filter incoming to just this response ID
     await _at('ATFCSH $txHex');     // FC frames we send back to ECU use our TX header
     await _at('ATFCSD 30 00 00');   // FC data: CTS, BS=0, STmin=0 (same as Python)
-    await _at('ATFCSM 1');          // FC mode 1: use ATFCSD + ATFCSH
+    await _at('ATFCSM 2');          // FC mode 2: use ATFCSD + ATFCSH explicitly
   }
 
   /// Send an ELM/AT command; wait for the `>` prompt.
