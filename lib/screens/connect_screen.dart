@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart';
+import 'bms_clear_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
   const ConnectScreen({super.key});
@@ -218,6 +219,24 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     fontSize: 11,
                   ),
                   textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                _divider(),
+                const SizedBox(height: 16),
+                TextButton.icon(
+                  icon: const Icon(Icons.build,
+                      size: 16, color: Color(0xFFFFEB3B)),
+                  label: const Text(
+                    'BMS clear (advanced — no monitor needed)',
+                    style: TextStyle(
+                        color: Color(0xFFFFEB3B),
+                        fontSize: 12,
+                        letterSpacing: 1),
+                  ),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const BmsClearScreen()),
+                  ),
                 ),
               ],
             ),
