@@ -17,17 +17,17 @@ import '../can/elm327_tcp_adapter.dart';
 /// Which physical adapter path the BMS-Clear screen should use.
 enum _AdapterChoice { obdlinkBluetooth, wicanWiFi }
 
-/// Supported vehicles. Right now only Model S/X routines are known; Model 3
-/// is listed but disabled so the user can't accidentally pick it.
+/// Supported vehicles. Model S/X routines are confirmed; Model 3 is
+/// experimental — same routine table, pending on-car verification.
 enum _VehicleModel { unknown, sX, model3 }
 
 extension on _VehicleModel {
   String get label => switch (this) {
         _VehicleModel.unknown => '— select model —',
         _VehicleModel.sX      => 'Model S / X',
-        _VehicleModel.model3  => 'Model 3 (not supported yet)',
+        _VehicleModel.model3  => 'Model 3 (experimental)',
       };
-  bool get supported => this == _VehicleModel.sX;
+  bool get supported => this == _VehicleModel.sX || this == _VehicleModel.model3;
 }
 
 /// BMS DTC-clear screen. Owns its own ELM adapter instance so it doesn't
@@ -416,14 +416,13 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
               value: _model,
               enabled: !_busy,
               onChanged: (v) {
-                if (v == null || v == _VehicleModel.model3) return;
+                if (v == null) return;
                 setState(() => _model = v);
               },
               items: [
                 _dropdownItem(_VehicleModel.unknown, _VehicleModel.unknown.label),
                 _dropdownItem(_VehicleModel.sX, _VehicleModel.sX.label),
-                _dropdownItem(_VehicleModel.model3, _VehicleModel.model3.label,
-                    enabled: false),
+                _dropdownItem(_VehicleModel.model3, _VehicleModel.model3.label),
               ],
             ),
           ),
