@@ -17,19 +17,6 @@ import '../can/elm327_tcp_adapter.dart';
 /// Which physical adapter path the BMS-Clear screen should use.
 enum _AdapterChoice { obdlinkBluetooth, wicanWiFi }
 
-/// Supported vehicles. Model S/X routines are confirmed; Model 3 is
-/// experimental — same routine table, pending on-car verification.
-enum _VehicleModel { unknown, sX, model3 }
-
-extension on _VehicleModel {
-  String get label => switch (this) {
-        _VehicleModel.unknown => '— select model —',
-        _VehicleModel.sX      => 'Model S / X',
-        _VehicleModel.model3  => 'Model 3 (experimental)',
-      };
-  bool get supported => this == _VehicleModel.sX || this == _VehicleModel.model3;
-}
-
 /// BMS DTC-clear screen. Owns its own ELM adapter instance so it doesn't
 /// fight with the dashboard's monitor-mode session.
 class BmsClearScreen extends StatefulWidget {
@@ -53,7 +40,6 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
   _AdapterChoice _adapterChoice = Platform.isIOS
       ? _AdapterChoice.obdlinkBluetooth   // iOS defaults to MFi OBDLink
       : _AdapterChoice.obdlinkBluetooth;
-  _VehicleModel _model = _VehicleModel.unknown;
 
   // Cached from SharedPreferences (set by ConnectScreen when the user
   // connects the dashboard over WiFi to a WiCAN).
@@ -174,10 +160,6 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       _snack('Connect first.');
       return;
     }
-    if (!_model.supported) {
-      _snack('Pick a supported model first.');
-      return;
-    }
     if (_busy) return;
 
     final confirm = await showDialog<bool>(
@@ -240,10 +222,6 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     if (routines.isEmpty) return;
     if (_uds == null) {
       _snack('Connect first.');
-      return;
-    }
-    if (!_model.supported) {
-      _snack('Pick a supported model first.');
       return;
     }
     final confirm = await showDialog<bool>(
@@ -319,7 +297,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
   @override
   Widget build(BuildContext context) {
     final connected = _uds != null;
-    final canRun = connected && !_busy && _model.supported;
+    final canRun = connected && !_busy;
 
     return Scaffold(
       appBar: AppBar(
@@ -339,7 +317,7 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       body: Column(
         children: [
           _warningBanner(),
-          _adapterAndModelRow(connected),
+          _adapterRow(connected),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Row(
@@ -384,48 +362,19 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     );
   }
 
-  Widget _adapterAndModelRow(bool connected) {
+  Widget _adapterRow(bool connected) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: Row(
-        children: [
-          // Adapter picker — disabled while connected (must disconnect first)
-          Expanded(
-            flex: 3,
-            child: _labeledDropdown<_AdapterChoice>(
-              label: 'ADAPTER',
-              value: _adapterChoice,
-              enabled: !connected && !_busy,
-              onChanged: (v) => setState(() => _adapterChoice = v!),
-              items: [
-                _dropdownItem(_AdapterChoice.obdlinkBluetooth,
-                    Platform.isIOS
-                        ? 'OBDLink MX+ (MFi)'
-                        : 'OBDLink MX+ (BT)'),
-                _dropdownItem(_AdapterChoice.wicanWiFi,
-                    'WiCAN ELM $_wicanHost:$_wicanPort'),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          // Model picker — must be a supported model for Run to enable
-          Expanded(
-            flex: 2,
-            child: _labeledDropdown<_VehicleModel>(
-              label: 'MODEL',
-              value: _model,
-              enabled: !_busy,
-              onChanged: (v) {
-                if (v == null) return;
-                setState(() => _model = v);
-              },
-              items: [
-                _dropdownItem(_VehicleModel.unknown, _VehicleModel.unknown.label),
-                _dropdownItem(_VehicleModel.sX, _VehicleModel.sX.label),
-                _dropdownItem(_VehicleModel.model3, _VehicleModel.model3.label),
-              ],
-            ),
-          ),
+      child: _labeledDropdown<_AdapterChoice>(
+        label: 'ADAPTER  (Model S / X)',
+        value: _adapterChoice,
+        enabled: !connected && !_busy,
+        onChanged: (v) => setState(() => _adapterChoice = v!),
+        items: [
+          _dropdownItem(_AdapterChoice.obdlinkBluetooth,
+              Platform.isIOS ? 'OBDLink MX+ (MFi)' : 'OBDLink MX+ (BT)'),
+          _dropdownItem(_AdapterChoice.wicanWiFi,
+              'WiCAN ELM $_wicanHost:$_wicanPort'),
         ],
       ),
     );
