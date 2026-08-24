@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,18 +6,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../main.dart';
 import '../bms/routines.dart';
-import '../bms/security_access.dart';
-import '../bms/uds_client.dart';
-import '../can/elm327_adapter.dart';
-import '../can/elm327_ea_adapter.dart';
-import '../can/elm327_base.dart';
-import '../can/elm327_tcp_adapter.dart';
+import '../bms/bms_uds_client.dart';
+import '../can/slcan_adapter.dart';
 
-/// Which physical adapter path the BMS-Clear screen should use.
-enum _AdapterChoice { obdlinkBluetooth, wicanWiFi }
-
-/// BMS DTC-clear screen. Owns its own ELM adapter instance so it doesn't
-/// fight with the dashboard's monitor-mode session.
+/// BMS DTC-clear screen. Talks to a MeatPi WiCAN in **native SLCAN mode**
+/// over WiFi TCP — the only adapter path this pack's UDS stack has ever
+/// actually been observed to work over (per the bench GUI's Python).
+///
+/// OBDLink MX+ was removed as an option: an ELM327 physically cannot do
+/// UDS/sending on this pack (the Python code raises on that path).
+/// OBDLink remains the right choice for the dashboard's monitor mode.
 class BmsClearScreen extends StatefulWidget {
   const BmsClearScreen({super.key});
 
@@ -27,24 +24,17 @@ class BmsClearScreen extends StatefulWidget {
 }
 
 class _BmsClearScreenState extends State<BmsClearScreen> {
-  Elm327Base? _adapter;
-  UdsClient? _uds;
+  SlcanAdapter? _adapter;
+  BmsUdsClient? _uds;
   final List<String> _log = [];
   final ScrollController _logCtrl = ScrollController();
 
   String _status = 'Not connected';
   bool _busy = false;
-  bool _sessionOpen = false;      // extended session + SecurityAccess passed
-  int? _currentReqCanId;          // last CAN ID we set via ATSH
+  bool _sessionOpen = false;
 
-  _AdapterChoice _adapterChoice = Platform.isIOS
-      ? _AdapterChoice.obdlinkBluetooth   // iOS defaults to MFi OBDLink
-      : _AdapterChoice.obdlinkBluetooth;
-
-  // Cached from SharedPreferences (set by ConnectScreen when the user
-  // connects the dashboard over WiFi to a WiCAN).
-  String _wicanHost = '192.168.50.158';
-  int _wicanPort = 3333;
+  final _hostController = TextEditingController(text: '192.168.80.1');
+  final _portController = TextEditingController(text: '3333');
 
   static const _kLastHostKey = 'wican_last_host';
   static const _kLastPortKey = 'wican_last_port';
@@ -59,15 +49,23 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _wicanHost = prefs.getString(_kLastHostKey) ?? _wicanHost;
-      _wicanPort = int.tryParse(prefs.getString(_kLastPortKey) ?? '') ?? _wicanPort;
+      _hostController.text = prefs.getString(_kLastHostKey) ?? _hostController.text;
+      _portController.text = prefs.getString(_kLastPortKey) ?? _portController.text;
     });
+  }
+
+  Future<void> _saveEndpoint(String host, int port) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLastHostKey, host);
+    await prefs.setString(_kLastPortKey, port.toString());
   }
 
   @override
   void dispose() {
     _teardown();
     _logCtrl.dispose();
+    _hostController.dispose();
+    _portController.dispose();
     super.dispose();
   }
 
@@ -78,66 +76,37 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     final monitorOn = context.read<AppModel>().isConnected;
     if (monitorOn) {
       _snack('Disconnect the dashboard monitor first '
-          '(it holds the adapter serial link).');
+          '(WiCAN only accepts one TCP client at a time).');
+      return;
+    }
+    final host = _hostController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 3333;
+    if (host.isEmpty) {
+      _snack('WiCAN host is required.');
       return;
     }
     setState(() {
       _busy = true;
-      _status = 'Connecting…';
+      _status = 'Connecting to $host:$port…';
     });
-    _appendLog('--- Connecting ---');
+    _appendLog('--- Connecting to $host:$port (SLCAN mode) ---');
     try {
-      final adapter = _makePlatformAdapter();
-      final uds = UdsClient(adapter, onLog: _appendLog);
-      await uds.initialize();
+      await _saveEndpoint(host, port);
+      final adapter = SlcanAdapter(host: host, port: port);
+      await adapter.connect();
+      _appendLog('SLCAN open OK — C\\r S6\\r O\\r sent');
+      final uds = BmsUdsClient(adapter, onLog: _appendLog)..open();
       _adapter = adapter;
       _uds = uds;
-      setState(() {
-        _status = 'ELM initialized — ready';
-      });
+      setState(() => _status = 'Connected — session/security not yet opened');
     } catch (e) {
       _appendLog('!! connect failed: $e');
+      _appendLog('   Tip: WiCAN protocol must be "slcan" (not "ELM327").');
       setState(() => _status = 'Connect failed: $e');
       await _teardown();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  Elm327Base _makePlatformAdapter() {
-    void status(String m) => _appendLog('elm: $m');
-    switch (_adapterChoice) {
-      case _AdapterChoice.wicanWiFi:
-        return Elm327TcpAdapter(
-          host: _wicanHost, port: _wicanPort, onStatus: status);
-      case _AdapterChoice.obdlinkBluetooth:
-        if (Platform.isIOS) return Elm327EaAdapter(onStatus: status);
-        return Elm327Adapter(deviceName: 'OBDLink', onStatus: status);
-    }
-  }
-
-  /// Open the extended session + SecurityAccess against the BMS (always at
-  /// 0x602, matching T-Clear). Whichever CAN ID the caller intends to use
-  /// for the *routine* itself is set separately, right before the routine
-  /// fires — see [_runRoutine].
-  Future<void> _openSession() async {
-    final uds = _uds;
-    if (uds == null) return;
-    _appendLog('--- Opening extended session + SecurityAccess (BMS 0x602) ---');
-    final res = await openSecurityAccessSession(uds);
-    _currentReqCanId = kBmsRequestCanId;
-    _appendLog('security-access result: ${res.label}');
-    if (res == SecurityResult.success) {
-      // Tesla BMS drops the extended session after ~5 s of silence. Start
-      // 3E 80 (TesterPresent, suppress response) at 4.5 s so pauses
-      // between routine taps don't invalidate the unlock.
-      uds.startKeepAlive();
-      _appendLog('  → TesterPresent keepalive started (4.5s)');
-    }
-    setState(() {
-      _sessionOpen = res == SecurityResult.success;
-      _status = res.label;
-    });
   }
 
   Future<void> _teardown() async {
@@ -146,17 +115,41 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       await _uds?.close();
     } catch (_) {}
     _uds = null;
+    try {
+      await _adapter?.disconnect();
+    } catch (_) {}
     _adapter = null;
     _sessionOpen = false;
-    _currentReqCanId = null;
     if (mounted) setState(() => _status = 'Disconnected');
+  }
+
+  Future<void> _openSession() async {
+    final uds = _uds;
+    if (uds == null) return;
+    _appendLog('--- Opening extended session + SecurityAccess ---');
+    final sess = await uds.startSession(0x03);
+    if (!sess) {
+      setState(() {
+        _sessionOpen = false;
+        _status = 'Session 0x03 rejected';
+      });
+      return;
+    }
+    final sec = await uds.unlockSecurity();
+    setState(() {
+      _sessionOpen = sec;
+      _status = sec ? 'Session + Security OK' : 'SecurityAccess failed';
+    });
+    if (sec) {
+      uds.startKeepAlive();
+      _appendLog('--- TesterPresent keepalive started (4.5s) ---');
+    }
   }
 
   // ── command execution ─────────────────────────────────────────────────
 
   Future<void> _runRoutine(Routine r) async {
-    final uds = _uds;
-    if (uds == null) {
+    if (_uds == null) {
       _snack('Connect first.');
       return;
     }
@@ -167,15 +160,15 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       builder: (_) => AlertDialog(
         title: Text('Run ${r.label}?'),
         content: Text(
-          'This will send routineControl start on request ID '
-          '0x${r.reqCanId.toRadixString(16).toUpperCase()} '
-          '(routine ${r.hexId}).\n\n'
+          'Sends routineControl start ${r.hexId} on 0x602.\n\n'
           'Only run this after the underlying fault has been repaired.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
               child: const Text('Run')),
         ],
       ),
@@ -191,24 +184,10 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
         _snack('Security-access failed; routine not sent.');
         return;
       }
-      // Point ATSH at the routine's own request ID before sending. The
-      // security session on 0x602 stays valid — Tesla unlocks per-ECU and
-      // the unlock persists across header changes.
-      if (_currentReqCanId != r.reqCanId) {
-        await uds.setSession(reqCanId: r.reqCanId);
-        _currentReqCanId = r.reqCanId;
-      }
       _appendLog('--- ${r.label} (${r.hexId}) ---');
-      final ok = await uds.sendUdsSingleFrameExpect(
-        r.requestBytes,
-        r.expectedResponseHex,
-        timeout: const Duration(seconds: 3),
-      );
-      setState(() {
-        _status = ok
-            ? '${r.label}: positive response'
-            : '${r.label}: NO positive response';
-      });
+      final res = await _uds!.runRoutine(r.routineId);
+      _appendLog('    → ${res.label}');
+      setState(() => _status = '${r.label}: ${res.label}');
     } catch (e) {
       _appendLog('!! error: $e');
       setState(() => _status = 'Error: $e');
@@ -229,14 +208,16 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       builder: (_) => AlertDialog(
         title: Text('Run composite: $name?'),
         content: Text(
-          'This will run ${routines.length} routines in order:\n\n'
+          'Runs ${routines.length} routines in order:\n\n'
           '${routines.map((r) => '  • ${r.hexId}  ${r.label}').join('\n')}\n\n'
           'Only run after repairing the underlying fault.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
               child: const Text('Run all')),
         ],
       ),
@@ -252,18 +233,10 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
         return;
       }
       for (final r in routines) {
-        if (_currentReqCanId != r.reqCanId) {
-          await _uds!.setSession(reqCanId: r.reqCanId);
-          _currentReqCanId = r.reqCanId;
-        }
         _appendLog('--- ${r.label} (${r.hexId}) ---');
-        final ok = await _uds!.sendUdsSingleFrameExpect(
-          r.requestBytes,
-          r.expectedResponseHex,
-          timeout: const Duration(seconds: 3),
-        );
-        _appendLog(ok ? '  -> positive response' : '  -> NO positive response');
-        await Future.delayed(const Duration(milliseconds: 400));
+        final res = await _uds!.runRoutine(r.routineId);
+        _appendLog('    → ${res.label}');
+        await Future.delayed(const Duration(milliseconds: 250));
       }
       _appendLog('=== composite complete ===');
     } catch (e) {
@@ -280,7 +253,6 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       _log.add(line);
       if (_log.length > 500) _log.removeRange(0, _log.length - 500);
     });
-    // Auto-scroll to bottom after frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_logCtrl.hasClients) {
         _logCtrl.jumpTo(_logCtrl.position.maxScrollExtent);
@@ -317,13 +289,14 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
       body: Column(
         children: [
           _warningBanner(),
-          _adapterRow(connected),
+          _wicanRow(connected),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Row(
               children: [
                 Container(
-                  width: 8, height: 8,
+                  width: 8,
+                  height: 8,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: connected
@@ -341,7 +314,8 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
                 ),
                 if (_busy)
                   const SizedBox(
-                      width: 14, height: 14,
+                      width: 14,
+                      height: 14,
                       child: CircularProgressIndicator(strokeWidth: 2)),
               ],
             ),
@@ -362,96 +336,76 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
     );
   }
 
-  Widget _adapterRow(bool connected) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: _labeledDropdown<_AdapterChoice>(
-        label: 'ADAPTER  (Model S / X)',
-        value: _adapterChoice,
-        enabled: !connected && !_busy,
-        onChanged: (v) => setState(() => _adapterChoice = v!),
-        items: [
-          _dropdownItem(_AdapterChoice.obdlinkBluetooth,
-              Platform.isIOS ? 'OBDLink MX+ (MFi)' : 'OBDLink MX+ (BT)'),
-          _dropdownItem(_AdapterChoice.wicanWiFi,
-              'WiCAN ELM $_wicanHost:$_wicanPort'),
-        ],
-      ),
-    );
-  }
-
-  Widget _labeledDropdown<T>({
-    required String label,
-    required T value,
-    required bool enabled,
-    required ValueChanged<T?> onChanged,
-    required List<DropdownMenuItem<T>> items,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label,
-            style: const TextStyle(
-                color: Color(0xFF90CAF9),
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1)),
-        Container(
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF16213E),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: const Color(0xFF1E3A5F)),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<T>(
-              isExpanded: true,
-              value: value,
-              dropdownColor: const Color(0xFF16213E),
-              iconEnabledColor: const Color(0xFF90CAF9),
-              style: const TextStyle(
-                  color: Colors.white, fontSize: 12, fontFamily: 'RobotoMono'),
-              onChanged: enabled ? onChanged : null,
-              items: items,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  DropdownMenuItem<T> _dropdownItem<T>(T value, String text,
-      {bool enabled = true}) {
-    return DropdownMenuItem<T>(
-      value: value,
-      enabled: enabled,
-      child: Text(text,
-          style: TextStyle(
-              color: enabled ? Colors.white : const Color(0xFF546E7A),
-              fontSize: 12)),
-    );
-  }
-
   Widget _warningBanner() {
     return Container(
       width: double.infinity,
       color: const Color(0x33FF1744),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: const Text(
-        'These commands write to the BMS. Only run each after you have '
-        'REPAIRED the underlying fault. Wrong use can cause thermal-runaway '
-        'or contactor damage.',
+        'These commands write to the BMS on Model S/X (2013-era) packs. '
+        'Only run each after you have REPAIRED the underlying fault. '
+        'Requires a MeatPi WiCAN in native SLCAN mode (not ELM emulator).',
         style: TextStyle(color: Color(0xFFFFCDD2), fontSize: 11),
       ),
     );
   }
 
-  Widget _routineList(bool connected) {
+  Widget _wicanRow(bool connected) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: Row(
+        children: [
+          const Text('WiCAN:',
+              style: TextStyle(
+                  color: Color(0xFF90CAF9),
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1)),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 3,
+            child: _textField(_hostController, 'IP address', !connected && !_busy),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 1,
+            child: _textField(_portController, 'port', !connected && !_busy),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _textField(TextEditingController ctrl, String hint, bool enabled) {
+    return TextField(
+      controller: ctrl,
+      enabled: enabled,
+      style: const TextStyle(
+        color: Colors.white,
+        fontFamily: 'RobotoMono',
+        fontSize: 13,
+      ),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFF546E7A), fontSize: 12),
+        filled: true,
+        fillColor: const Color(0xFF16213E),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: Color(0xFF1E3A5F)),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      ),
+    );
+  }
+
+  Widget _routineList(bool canRun) {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 4),
       children: [
-        for (final r in kRoutines) _routineTile(r, connected),
+        for (final r in kRoutines) _routineTile(r, canRun),
         const Divider(color: Color(0xFF1E3A5F)),
         const Padding(
           padding: EdgeInsets.fromLTRB(12, 8, 12, 4),
@@ -463,32 +417,32 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
                   letterSpacing: 1)),
         ),
         for (final entry in kComposites.entries)
-          _compositeTile(entry.key, entry.value, connected),
+          _compositeTile(entry.key, entry.value, canRun),
       ],
     );
   }
 
-  Widget _routineTile(Routine r, bool connected) {
+  Widget _routineTile(Routine r, bool canRun) {
     return Card(
       child: ListTile(
         dense: true,
         title: Text(r.label,
             style: const TextStyle(fontSize: 13, color: Color(0xFFE0E0E0))),
         subtitle: Text(
-          '${r.hexId}  •  req 0x${r.reqCanId.toRadixString(16).toUpperCase()}'
+          '${r.hexId}  •  req 0x602'
           '${r.faults.isEmpty ? '' : '\n${r.faults.join(", ")}'}',
           style: const TextStyle(
               fontSize: 10, color: Color(0xFF78909C), fontFamily: 'RobotoMono'),
         ),
         trailing: FilledButton.tonal(
-          onPressed: (connected && !_busy) ? () => _runRoutine(r) : null,
+          onPressed: canRun ? () => _runRoutine(r) : null,
           child: const Text('Run'),
         ),
       ),
     );
   }
 
-  Widget _compositeTile(String name, List<int> ids, bool connected) {
+  Widget _compositeTile(String name, List<int> ids, bool canRun) {
     return Card(
       child: ListTile(
         dense: true,
@@ -496,14 +450,15 @@ class _BmsClearScreenState extends State<BmsClearScreen> {
             style: const TextStyle(fontSize: 13, color: Color(0xFFE0E0E0))),
         subtitle: Text(
           ids
-              .map((id) => '0x${id.toRadixString(16).toUpperCase().padLeft(4, '0')}')
+              .map((id) =>
+                  '0x${id.toRadixString(16).toUpperCase().padLeft(4, '0')}')
               .join(' → '),
           style: const TextStyle(
               fontSize: 10, color: Color(0xFF78909C), fontFamily: 'RobotoMono'),
         ),
         trailing: FilledButton.tonal(
           onPressed:
-              (connected && !_busy) ? () => _runComposite(name, ids) : null,
+              canRun ? () => _runComposite(name, ids) : null,
           child: const Text('Run all'),
         ),
       ),
