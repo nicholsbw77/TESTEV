@@ -1,0 +1,45 @@
+# Builds an UNSIGNED macOS .app on GitHub's macOS runners — no Mac needed to
+# produce it. The result is ad-hoc/unsigned, so on first launch open it with
+# right-click → Open (or clear quarantine: xattr -dr com.apple.quarantine
+# TESTEV.app) to get past Gatekeeper. For notarized distribution, wire in a
+# Developer ID signing step later.
+name: macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/handshake-current, main]
+    paths:
+      - lib/**
+      - macos/**
+      - plugins/**
+      - pubspec.yaml
+      - .github/workflows/macos-app.yml
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter config --enable-macos-desktop
+
+      - run: flutter pub get
+
+      - run: flutter build macos --release
+
+      - name: Package .app as zip
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -qry "$GITHUB_WORKSPACE/TESTEV-macos.zip" *.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TESTEV-macos-app
+          path: TESTEV-macos.zip
+          retention-days: 14
