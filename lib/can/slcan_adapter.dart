@@ -47,6 +47,15 @@ class SlcanAdapter extends CanAdapter {
   Future<void> connect() async {
     _socket = await Socket.connect(host, port,
         timeout: const Duration(seconds: 5));
+    // Disable Nagle. Our ISO-TP Flow Control is a single tiny frame the ECU
+    // waits for before it streams the multi-frame SecurityAccess seed; with
+    // Nagle on, TCP can hold that frame back ~40-200 ms, past the BMS's
+    // flow-control (N_Bs) window, and the seed's consecutive frames never
+    // arrive ("Timeout waiting for consecutive frame"). TCP_NODELAY sends
+    // every slcan line the instant we write it.
+    try {
+      _socket!.setOption(SocketOption.tcpNoDelay, true);
+    } catch (_) {}
     connected = true;
 
     // Start pumping incoming bytes into parsed frames immediately, so the

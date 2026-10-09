@@ -46,9 +46,12 @@ class IsoTpChannel {
     this.adapter, {
     required this.txId,
     required this.rxId,
-    this.p2Timeout = const Duration(seconds: 2),
+    this.p2Timeout = const Duration(seconds: 3),
     this.p2StarTimeout = const Duration(seconds: 5),
-    this.cfTimeout = const Duration(milliseconds: 250),
+    // 250 ms is the reference value for a local socketcan bus; over the
+    // WiCAN's WiFi TCP link the consecutive frames of the seed can jitter,
+    // so allow more headroom before declaring the multi-frame reply dead.
+    this.cfTimeout = const Duration(milliseconds: 600),
     this.fcBlockSize = 0,
     this.fcStmin = 0,
   });
@@ -87,8 +90,17 @@ class IsoTpChannel {
     // Drain any stale bus chatter that arrived between requests so we
     // don't misinterpret it as our reply.
     _rxQueue.clear();
+    // Expected positive-response SID = request SID + 0x40 (ISO 14229). We
+    // pass it into _recv so a frame left over from a previous request — the
+    // classic case being a duplicated/late `50 03` DiagnosticSessionControl
+    // response arriving while we wait for the `67 05` seed — is skipped
+    // instead of being returned as "the" reply.
+    final expectedSid = data.isNotEmpty ? (data[0] + 0x40) & 0xFF : -1;
     await _send(data);
-    return _recv(deadline: DateTime.now().add(p2Timeout));
+    return _recv(
+      deadline: DateTime.now().add(p2Timeout),
+      expectedSid: expectedSid,
+    );
   }
 
   /// Fire-and-forget send (no reply awaited). Used for TesterPresent with
@@ -170,7 +182,14 @@ class IsoTpChannel {
 
   // ── Receive ────────────────────────────────────────────────────────────────
 
-  Future<List<int>> _recv({required DateTime deadline}) async {
+  /// [expectedSid] is the positive-response service id we're waiting for
+  /// (request SID + 0x40), or -1 to accept any. Single/First frames whose
+  /// first payload byte is neither [expectedSid] nor 0x7F (negative
+  /// response) are stale frames from an earlier request and are skipped.
+  Future<List<int>> _recv({
+    required DateTime deadline,
+    int expectedSid = -1,
+  }) async {
     while (DateTime.now().isBefore(deadline)) {
       final frame = await _awaitFrame(deadline);
       if (frame == null) break;
@@ -182,10 +201,19 @@ class IsoTpChannel {
         // Single frame.
         final length = d[0] & 0x0F;
         final payload = d.sublist(1, 1 + length);
-        return _checkResponse(payload);
+        if (!_isForUs(payload.isEmpty ? -1 : payload[0], expectedSid)) {
+          continue; // stale/foreign response — keep waiting for ours.
+        }
+        return _checkResponse(payload, expectedSid);
       }
 
       if (frameType == 0x1) {
+        // First frame. Its first payload byte (d[2]) is the response SID;
+        // if it isn't ours, skip it WITHOUT sending flow control so we don't
+        // acknowledge someone else's multi-frame message.
+        if (!_isForUs(d.length > 2 ? d[2] : -1, expectedSid)) {
+          continue;
+        }
         // First frame — send FC, then collect CFs.
         final length = ((d[0] & 0x0F) << 8) | d[1];
         final payload = <int>[...d.sublist(2)];
@@ -210,7 +238,7 @@ class IsoTpChannel {
           expectedSn = (expectedSn + 1) & 0x0F;
           cfDeadline = DateTime.now().add(cfTimeout);
         }
-        return _checkResponse(payload.sublist(0, length));
+        return _checkResponse(payload.sublist(0, length), expectedSid);
       }
 
       // Anything else (stray FC, etc.) — ignore.
@@ -220,18 +248,34 @@ class IsoTpChannel {
         'within ${p2Timeout.inMilliseconds}ms');
   }
 
+  /// True if a response payload's first byte belongs to the request we sent:
+  /// the matching positive SID, or 0x7F (a negative response, which carries
+  /// the offending SID in its own byte and is validated in _checkResponse).
+  /// [expectedSid] < 0 disables the check.
+  static bool _isForUs(int firstByte, int expectedSid) {
+    if (expectedSid < 0) return true;
+    return firstByte == expectedSid || firstByte == 0x7F;
+  }
+
   void _sendFlowControl() {
     _tx([0x30, fcBlockSize, fcStmin]);
   }
 
-  Future<List<int>> _checkResponse(List<int> payload) async {
+  Future<List<int>> _checkResponse(List<int> payload, int expectedSid) async {
     if (payload.length >= 3 && payload[0] == 0x7F) {
       final serviceId = payload[1];
       final nrc = payload[2];
+      // A negative response naming a different service is stale — it belongs
+      // to an earlier request. Ignore it and keep waiting for ours.
+      if (expectedSid >= 0 && serviceId != ((expectedSid - 0x40) & 0xFF)) {
+        return _recv(deadline: DateTime.now().add(p2Timeout),
+            expectedSid: expectedSid);
+      }
       if (nrc == 0x78) {
         // ISO 14229 P2* — the ECU is processing; keep listening for the
         // real reply within the extended window.
-        return _recv(deadline: DateTime.now().add(p2StarTimeout));
+        return _recv(deadline: DateTime.now().add(p2StarTimeout),
+            expectedSid: expectedSid);
       }
       throw IsoTpNegativeResponse(serviceId, nrc);
     }

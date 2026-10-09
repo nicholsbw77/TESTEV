@@ -226,14 +226,27 @@ class PackState {
   // ── Feed other CAN IDs ───────────────────────────────────────────────
 
   void feed102(List<int> data) {
+    // Frame 0x102 (258) BMS_Current_And_Voltage, per tesla_models_rwd.dbc:
+    //   BMS_Pack_Voltage : bit 0,  len 16, LITTLE-endian, unsigned, 0.01 V
+    //   BMS_Pack_Current : bit 16, len 15, LITTLE-endian, SIGNED,   0.1  A
+    // NOTE on byte order: pack voltage reads correct as big-endian on this
+    // 2013 Model S pack bus (357.7 V == 96S x 3.726 V, locked by the per-cell
+    // readings), so voltage is left big-endian. The current field, however,
+    // is little-endian 15-bit signed: decoding the observed bytes big-endian
+    // produced the impossible -1945.6 A at idle; little-endian 15-bit signed
+    // yields +18.0 A, matching a door-open/HV-awake idle draw.
     if (data.length < 2) return;
     packVoltage = ((data[0] << 8) | data[1]) * 0.01;
     if (data.length >= 4) {
-      final rawI = (data[2] << 8) | data[3];
-      if (rawI == 0xFFFF || rawI == 0x7FFF) {
+      // Little-endian 16 bits, then mask to the DBC's 15-bit signed field.
+      final rawLe = data[2] | (data[3] << 8);
+      final mag = rawLe & 0x7FFF;
+      if (mag == 0x7FFF) {
+        // All-ones = invalid/unavailable sentinel.
         packCurrent = double.nan;
       } else {
-        int signed = rawI > 0x7FFF ? rawI - 0x10000 : rawI;
+        // Sign-extend from bit 14 (15-bit two's complement).
+        final signed = (mag & 0x4000) != 0 ? mag - 0x8000 : mag;
         packCurrent = signed * 0.1;
       }
     }
